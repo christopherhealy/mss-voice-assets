@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MSS Voice Lab</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 980px;
+      margin: 24px auto;
+      padding: 0 16px;
+      line-height: 1.45;
+    }
+    h1 { margin-bottom: 6px; }
+    .muted { color: #666; margin-bottom: 18px; }
+    .row { margin-bottom: 16px; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 16px;
+    }
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    input, select, textarea, button {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px;
+      font-size: 14px;
+    }
+    textarea {
+      min-height: 180px;
+      resize: vertical;
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+    .actions button {
+      width: auto;
+      min-width: 150px;
+    }
+    audio {
+      width: 100%;
+      margin-top: 8px;
+    }
+    pre {
+      background: #f6f6f6;
+      border: 1px solid #ddd;
+      padding: 12px;
+      overflow: auto;
+      font-size: 12px;
+    }
+    .small {
+      font-size: 12px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <h1>MSS Voice Lab</h1>
+  <div class="muted">
+    Paste any text, choose language/region/voice, render it, play it, and log playback.
+  </div>
+
+  <div class="row">
+    <label for="textId">Text ID</label>
+    <input id="textId" value="qa:manual_test_001" />
+    <div class="small">Example: <code>qa:manual_test_001</code> or <code>question:kids_smartphones</code></div>
+  </div>
+
+  <div class="row">
+    <label for="textType">Text Type</label>
+    <select id="textType">
+      <option value="question">Question</option>
+      <option value="answer">Answer</option>
+      <option value="essay">Essay</option>
+      <option value="counter">Counter</option>
+      <option value="remarks">Remarks</option>
+      <option value="guidance">Guidance</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="textInput">Text</label>
+    <textarea id="textInput">Should kids be given smartphones?</textarea>
+  </div>
+
+  <div class="grid">
+    <div class="row">
+      <label for="language">Language</label>
+      <select id="language">
+        <option value="auto">Auto-detect</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label for="region">Region</label>
+      <select id="region">
+        <option value="">All regions</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label for="voiceProfile">Voice</label>
+      <select id="voiceProfile">
+        <option value="">Loading profiles...</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="row">
+      <label for="storageType">Storage Type</label>
+      <select id="storageType">
+        <option value="long_duration">Long Duration</option>
+        <option value="short_duration">Short Duration</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label for="sourceApp">Source App</label>
+      <input id="sourceApp" value="qa-voice-lab" />
+    </div>
+
+    <div class="row">
+      <label for="resolvedVoice">Resolved Voice</label>
+      <input id="resolvedVoice" readonly />
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="btnRender" type="button">Render & Play</button>
+    <button id="btnPlayback" type="button">Register Playback</button>
+    <button id="btnPlayExisting" type="button">Play Existing URL</button>
+    <button id="btnClear" type="button">Clear</button>
+  </div>
+
+  <div class="row">
+    <label>Audio Player</label>
+    <audio id="player" controls></audio>
+  </div>
+
+  <div class="row">
+    <label for="audioUrl">Audio URL</label>
+    <input id="audioUrl" readonly />
+  </div>
+
+  <div class="row">
+    <label for="playbackStatus">Playback Status</label>
+    <input id="playbackStatus" readonly />
+  </div>
+
+  <div class="row">
+    <label>API Response</label>
+    <pre id="output">{}</pre>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    let ALL_PROFILES = [];
+    let LAST_VOICE_ASSET_ID = null;
+
+    function inferStorageType(textType) {
+      return String(textType || "").toLowerCase() === "answer"
+        ? "short_duration"
+        : "long_duration";
+    }
+
+    function detectLanguage(text) {
+      const s = String(text || "");
+      if (/[¿¡ñáéíóúü]/i.test(s)) return "spanish";
+      if (/[àâçéèêëîïôûùüÿœæ]/i.test(s)) return "french";
+      if (/[àèéìíîòóù]/i.test(s)) return "italian";
+      return "english";
+    }
+
+    function uniqueSorted(values) {
+      return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    }
+
+    function capitalize(s) {
+      const str = String(s || "");
+      if (!str) return "";
+      return str.charAt(0).toUpperCase() + str.slice(1);
+    }
+
+    async function loadProfiles() {
+      const res = await fetch("/api/voice/profiles", { cache: "no-store" });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "profiles_load_failed");
+      ALL_PROFILES = Array.isArray(data.profiles) ? data.profiles : [];
+    }
+
+    function renderLanguageOptions() {
+      const langs = uniqueSorted(ALL_PROFILES.map(p => p.language));
+      $("language").innerHTML =
+        `<option value="auto">Auto-detect</option>` +
+        langs.map(lang => `<option value="${lang}">${capitalize(lang)}</option>`).join("");
+    }
+
+    function renderRegionOptions() {
+      const selectedLanguage = $("language").value;
+      const text = $("textInput").value;
+      const effectiveLanguage = selectedLanguage === "auto"
+        ? detectLanguage(text)
+        : selectedLanguage;
+
+      const filtered = ALL_PROFILES.filter(p => p.language === effectiveLanguage);
+      const regions = uniqueSorted(filtered.map(p => p.region));
+
+      $("region").innerHTML =
+        `<option value="">All regions</option>` +
+        regions.map(region => `<option value="${region}">${capitalize(region)}</option>`).join("");
+    }
+
+    function renderVoiceOptions() {
+      const selectedLanguage = $("language").value;
+      const selectedRegion = $("region").value;
+      const text = $("textInput").value;
+
+      const effectiveLanguage = selectedLanguage === "auto"
+        ? detectLanguage(text)
+        : selectedLanguage;
+
+      let filtered = ALL_PROFILES.filter(p => p.language === effectiveLanguage);
+
+      if (selectedRegion) {
+        filtered = filtered.filter(p => p.region === selectedRegion);
+      }
+
+      if (!filtered.length) {
+        $("voiceProfile").innerHTML = `<option value="">No matching voices</option>`;
+        $("resolvedVoice").value = "";
+        return;
+      }
+
+      $("voiceProfile").innerHTML = filtered.map(p => {
+        return `<option value="${p.voice_profile_id}">${p.display_name}</option>`;
+      }).join("");
+
+      updateResolvedVoice();
+    }
+
+    function updateResolvedVoice() {
+      const code = $("voiceProfile").value;
+      const profile = ALL_PROFILES.find(p => p.voice_profile_id === code);
+      $("resolvedVoice").value = profile ? profile.display_name : "";
+    }
+
+    async function registerPlayback() {
+      if (!LAST_VOICE_ASSET_ID) {
+        $("playbackStatus").value = "No voice asset yet.";
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/voice/playback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            voice_asset_id: LAST_VOICE_ASSET_ID,
+            user_ref: "qa-user",
+            session_ref: "qa-voice-lab-session",
+            context: {
+              source_app: "qa-voice-lab",
+              page: "qa-voice.html"
+            }
+          })
+        });
+
+        const data = await res.json();
+
+        if (data.ok) {
+          $("playbackStatus").value = `Playback logged. Count = ${data.playback_count}`;
+        } else {
+          $("playbackStatus").value = `Playback failed: ${data.error || "unknown"}`;
+        }
+      } catch (err) {
+        $("playbackStatus").value = `Playback failed: ${err}`;
+      }
+    }
+
+    async function renderVoice() {
+      const textId = $("textId").value.trim();
+      const textType = $("textType").value.trim();
+      const text = $("textInput").value;
+      const storageType = $("storageType").value.trim();
+      const sourceApp = $("sourceApp").value.trim() || "qa-voice-lab";
+
+      const selectedLanguage = $("language").value;
+      const effectiveLanguage = selectedLanguage === "auto"
+        ? detectLanguage(text)
+        : selectedLanguage;
+
+      const voiceProfileId = $("voiceProfile").value;
+
+      const payload = {
+        text_id: textId,
+        text_type: textType,
+        text,
+        storage_type: storageType,
+        voice_profile_id: voiceProfileId,
+        metadata: {
+          source_app: sourceApp,
+          language: effectiveLanguage,
+          ui: "qa-voice.html"
+        }
+      };
+
+      $("output").textContent = "Rendering...";
+      $("audioUrl").value = "";
+      $("playbackStatus").value = "";
+      LAST_VOICE_ASSET_ID = null;
+
+      try {
+        const res = await fetch("/api/voice/render", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        $("output").textContent = JSON.stringify(data, null, 2);
+
+        if (data?.audio_url) {
+          LAST_VOICE_ASSET_ID = Number(data.voice_asset_id || 0);
+          $("audioUrl").value = data.audio_url;
+          $("player").src = data.audio_url;
+          $("player").play().catch(() => {});
+          await registerPlayback();
+        }
+      } catch (err) {
+        $("output").textContent = String(err);
+      }
+    }
+
+    function playExisting() {
+      const url = $("audioUrl").value.trim();
+      if (!url) return;
+      $("player").src = url;
+      $("player").play().catch(() => {});
+    }
+
+    function clearAll() {
+      LAST_VOICE_ASSET_ID = null;
+      $("audioUrl").value = "";
+      $("playbackStatus").value = "";
+      $("output").textContent = "{}";
+      $("player").removeAttribute("src");
+      $("player").load();
+    }
+
+    $("textType").addEventListener("change", () => {
+      $("storageType").value = inferStorageType($("textType").value);
+    });
+
+    $("language").addEventListener("change", () => {
+      renderRegionOptions();
+      renderVoiceOptions();
+    });
+
+    $("region").addEventListener("change", renderVoiceOptions);
+    $("voiceProfile").addEventListener("change", updateResolvedVoice);
+    $("btnRender").addEventListener("click", renderVoice);
+    $("btnPlayback").addEventListener("click", registerPlayback);
+    $("btnPlayExisting").addEventListener("click", playExisting);
+    $("btnClear").addEventListener("click", clearAll);
+
+    $("textInput").addEventListener("input", () => {
+      if ($("language").value === "auto") {
+        renderRegionOptions();
+        renderVoiceOptions();
+      }
+    });
+
+    (async function init() {
+      try {
+        await loadProfiles();
+        renderLanguageOptions();
+        renderRegionOptions();
+        renderVoiceOptions();
+        $("storageType").value = inferStorageType($("textType").value);
+      } catch (err) {
+        $("output").textContent = `Failed to load profiles: ${err}`;
+      }
+    })();
+  </script>
+</body>
+</html>

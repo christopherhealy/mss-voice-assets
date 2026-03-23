@@ -1,0 +1,20 @@
+MSS_ADMIN_JWT_TTL=12h
+MSS_ADMIN_JWT_SECRET=7c8b4f0d2d7c5c9d2a1e8fcb3b29d6d54d0c9f1d8a4b9f7e
+MSS_ACTOR_JWT_SECRET= fd558c10ec57d7f085e06020f7cf02b50dece42209be6429e3999b653$
+INGLE_DEV_BYPASS=true
+INGLE_DEV_BYPASS_HOSTS=ingless.io,www.ingless.iDATABASE_URL=postgresql://msswid$
+SMTP_HOST=smtp.internic.ca
+OPENAI_API_KEY=sk-proj-1OiwknBbm7bt-8fb6_rtLoFdrfFl-y5pb-CN4hEeghFaacsl1PpEoBTs$
+INGLE_DEV_BYPASS=true
+INGLE_DEV_BYPASS_HOSTS=ingless.io,www.ingless.io
+MSS_VOX_URL=https://app.myspeakingscore.com/api/vox
+DATABASE_URL=postgresql://msswidgetmt_db_user:yfVVuUXiacCp3V13KrkezA3m5fff7Qku@dpg-d4709tumcj7s73decumg-a/msswidgetmt_db
+MSS_API_SECRET=1e9f78e2-ec19-4727-8434-fd7df9a8bd5a
+MSS_API_KEY=6830272b-7a34-4341-a367-8eb840664976
+R2_ACCESS_KEY_ID=8a5996eaa013e996006928d0ef86c6ac
+R2_SECRET_ACCESS_KEY=3e0ce5a03b8bfaff7eef3fb77d8cf6d6c6f196f513e50a5a297d587cbd$
+R2_BUCKET=ingle-audio
+R2_PUBLIC_BASE_URL=https://pub-c385dfc274664343a465a272aad87bd0.r2.dev
+R2_ACCOUNT_ID=abd267ac7a962182f100e1b686952857
+R2_ENDPOINT=https://abd267ac7a962182f100e1b686952857.r2.cloudflarestorage.com
+
