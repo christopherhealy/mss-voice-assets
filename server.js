@@ -5,7 +5,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 import voiceRoutes from "./routes/voice.routes.js";
 
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -13,39 +12,53 @@ const app = express();
 
 app.use(express.json());
 
-// CORS for Ingle frontend (local + production)
-app.use(cors({
-  origin: [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://www.ingless.io",
-    "https://ingless.io",
-    "https://api.ingless.io"
-  ],
+// -------------------------
+// CORS CONFIG (Gold Standard)
+// -------------------------
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "https://www.ingless.io",
+  "https://ingless.io",
+  "https://api.ingless.io"
+];
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow server-to-server / curl (no origin)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.warn("CORS blocked origin:", origin);
+    return callback(new Error("CORS not allowed"), false);
+  },
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Accept"]
-}));
+};
 
-app.options("*", cors({
-  origin: [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://www.ingless.io",
-    "https://ingless.io",
-    "https://api.ingless.io"
-  ],
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Accept"]
-}));
+// Apply globally
+app.use(cors(corsOptions));
 
+// Explicit preflight for critical route (prevents Express fallback behavior)
+app.options("/api/voice/render", cors(corsOptions));
+
+// -------------------------
 // DEBUG
+// -------------------------
 console.log("SERVER __dirname =", __dirname);
 console.log("STATIC DIR =", path.join(__dirname, "public"));
 
-// static files
+// -------------------------
+// STATIC
+// -------------------------
 app.use(express.static(path.join(__dirname, "public")));
 
-// health
+// -------------------------
+// HEALTH
+// -------------------------
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
@@ -54,13 +67,16 @@ app.get("/health", (req, res) => {
   });
 });
 
+// -------------------------
+// ROUTES (AFTER CORS)
+// -------------------------
+app.use("/api/voice", voiceRoutes);
+
 // debug route to prove server can see the file
 app.get("/debug-file", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "mock-audio", "Kids_Smartphones.txt"));
 });
 
-// API
-app.use("/api/voice", voiceRoutes);
 
 // root
 app.get("/", (req, res) => {
