@@ -1,8 +1,10 @@
 import "dotenv/config";
 import express from "express";
+import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import voiceRoutes from "./routes/voice.routes.js";
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,6 +12,31 @@ const __dirname = path.dirname(__filename);
 const app = express();
 
 app.use(express.json());
+
+// CORS for Ingle frontend (local + production)
+app.use(cors({
+  origin: [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://www.ingless.io",
+    "https://ingless.io",
+    "https://api.ingless.io"
+  ],
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Accept"]
+}));
+
+app.options("*", cors({
+  origin: [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://www.ingless.io",
+    "https://ingless.io",
+    "https://api.ingless.io"
+  ],
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Accept"]
+}));
 
 // DEBUG
 console.log("SERVER __dirname =", __dirname);
