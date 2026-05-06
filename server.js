@@ -15,36 +15,60 @@ app.use(express.json());
 // -------------------------
 // CORS CONFIG (Gold Standard)
 // -------------------------
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-  "https://www.ingless.io",
-  "https://ingless.io",
-  "https://api.ingless.io"
-];
+function isAllowedOrigin(origin = "") {
+  if (!origin) return true;
+
+  const exactOrigins = new Set([
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+
+    "https://www.ingless.io",
+    "https://ingless.io",
+    "https://api.ingless.io",
+
+    "https://eslsuccess.club",
+    "https://www.eslsuccess.club",
+  ]);
+
+  if (exactOrigins.has(origin)) return true;
+
+  // Production tenant subdomains:
+  // https://mss.ingless.io
+  // https://jessyacademy.ingless.io
+  if (/^https:\/\/[a-z0-9-]+\.ingless\.io$/i.test(origin)) return true;
+
+  // Local tenant subdomains:
+  // http://mss.localhost:3000
+  // http://jessyacademy.localhost:3000
+  if (/^http:\/\/[a-z0-9-]+\.localhost(?::\d+)?$/i.test(origin)) return true;
+
+  return false;
+}
 
 const corsOptions = {
   origin(origin, callback) {
-    // Allow server-to-server / curl (no origin)
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
+    if (isAllowedOrigin(origin)) {
       return callback(null, true);
     }
 
-    console.warn("CORS blocked origin:", origin);
-    return callback(new Error("CORS not allowed"), false);
+    console.warn("VOICE CORS blocked origin:", origin);
+    return callback(new Error(`CORS not allowed: ${origin}`), false);
   },
   methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Accept"]
+  allowedHeaders: ["Content-Type", "Accept", "Authorization"],
+  credentials: false,
+  optionsSuccessStatus: 204,
 };
 
 // Apply globally
 app.use(cors(corsOptions));
 
-// Explicit preflight for critical route (prevents Express fallback behavior)
+// Explicit preflight for critical routes
 app.options("/api/voice/render", cors(corsOptions));
-
+app.options("/api/voice/profiles", cors(corsOptions));
+app.options("/api/voice/playback", cors(corsOptions));
 // -------------------------
 // DEBUG
 // -------------------------
