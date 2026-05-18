@@ -4,7 +4,80 @@ import { getOrCreateVoiceAsset } from "../lib/getOrCreateVoiceAsset.js";
 import { registerPlayback } from "../lib/registerPlayback.js";
 
 const router = express.Router();
-//profiles
+
+const DEFAULT_ACCENT = "ca";
+const DEFAULT_GENDER_STYLE = "female";
+
+const SUPPORTED_ACCENTS = new Set(["ca", "us", "uk", "au", "in"]);
+const SUPPORTED_GENDER_STYLES = new Set(["female", "male"]);
+
+// ----------------------------------------------------------
+// Voice profile resolver
+// Rule:
+// explicit voice_profile_id > accent/gender match > Canadian fallback
+// ----------------------------------------------------------
+function normalizeAccent(value) {
+  const v = String(value || "").trim().toLowerCase();
+  return SUPPORTED_ACCENTS.has(v) ? v : DEFAULT_ACCENT;
+}
+
+function normalizeGenderStyle(value) {
+  const v = String(value || "").trim().toLowerCase();
+  return SUPPORTED_GENDER_STYLES.has(v) ? v : DEFAULT_GENDER_STYLE;
+}
+
+async function resolveVoiceProfileCode({ voiceProfileCode, accent, genderStyle }) {
+  const explicit = String(voiceProfileCode || "").trim();
+  if (explicit) return explicit;
+
+  const safeAccent = normalizeAccent(accent);
+  const safeGenderStyle = normalizeGenderStyle(genderStyle);
+
+  console.log("VOICE_RESOLVE_DEBUG_INPUT", {
+    inputAccent: accent,
+    inputGenderStyle: genderStyle,
+    safeAccent,
+    safeGenderStyle,
+    db: process.env.DATABASE_URL?.replace(/:[^:@]+@/, ":****@"),
+  });
+
+  const q = await pool.query(
+    `
+    select voice_code, display_name, accent, gender_style, is_default, is_active
+    from voice_profiles
+    where is_active = true
+      and lower(accent) = $1
+      and lower(gender_style) = $2
+    order by is_default desc, display_name asc
+    limit 1
+    `,
+    [safeAccent, safeGenderStyle]
+  );
+
+  console.log("VOICE_RESOLVE_DEBUG_PRIMARY_ROWS", q.rows);
+
+  if (q.rows?.[0]?.voice_code) return q.rows[0].voice_code;
+
+  const fallback = await pool.query(
+    `
+    select voice_code, display_name, accent, gender_style, is_default, is_active
+    from voice_profiles
+    where is_active = true
+      and lower(accent) = $1
+    order by is_default desc, display_name asc
+    limit 1
+    `,
+    [DEFAULT_ACCENT]
+  );
+
+  console.log("VOICE_RESOLVE_DEBUG_FALLBACK_ROWS", fallback.rows);
+
+  return fallback.rows?.[0]?.voice_code || "";
+}
+
+// ----------------------------------------------------------
+// Profiles
+// ----------------------------------------------------------
 router.get("/profiles", async (req, res) => {
   try {
     const q = await pool.query(
@@ -45,7 +118,10 @@ router.get("/profiles", async (req, res) => {
     });
   }
 });
-//playback
+
+// ----------------------------------------------------------
+// Playback
+// ----------------------------------------------------------
 router.post("/playback", express.json({ limit: "256kb" }), async (req, res) => {
   try {
     const voiceAssetId = Number(req.body?.voice_asset_id || 0);
@@ -80,30 +156,53 @@ router.post("/playback", express.json({ limit: "256kb" }), async (req, res) => {
     });
   }
 });
-//render
+
+// ----------------------------------------------------------
+// Render
+// Supports:
+// 1. Explicit voice_profile_id
+// 2. Accent/gender resolver
+// ----------------------------------------------------------
 router.post("/render", express.json({ limit: "1mb" }), async (req, res) => {
   try {
     const textId = String(req.body?.text_id || "").trim();
     const textType = String(req.body?.text_type || "").trim().toLowerCase();
     const text = String(req.body?.text || "");
     const storageType = String(req.body?.storage_type || "").trim().toLowerCase();
-    const voiceProfileCode = String(req.body?.voice_profile_id || "").trim();
+
+    const requestedVoiceProfileCode = String(req.body?.voice_profile_id || "").trim();
+    const accent = req.body?.accent;
+    const genderStyle = req.body?.gender_style || req.body?.kind || DEFAULT_GENDER_STYLE;
+
     const metadata = req.body?.metadata || {};
 
     if (!textId) {
       return res.status(400).json({ ok: false, error: "missing_text_id" });
     }
+
     if (!textType) {
       return res.status(400).json({ ok: false, error: "missing_text_type" });
     }
+
     if (!text) {
       return res.status(400).json({ ok: false, error: "missing_text" });
     }
+
     if (!storageType) {
       return res.status(400).json({ ok: false, error: "missing_storage_type" });
     }
+
+    const voiceProfileCode = await resolveVoiceProfileCode({
+      voiceProfileCode: requestedVoiceProfileCode,
+      accent,
+      genderStyle,
+    });
+
     if (!voiceProfileCode) {
-      return res.status(400).json({ ok: false, error: "missing_voice_profile_id" });
+      return res.status(400).json({
+        ok: false,
+        error: "voice_profile_resolution_failed",
+      });
     }
 
     const out = await getOrCreateVoiceAsset({
@@ -112,7 +211,13 @@ router.post("/render", express.json({ limit: "1mb" }), async (req, res) => {
       text,
       storageType,
       voiceProfileCode,
-      metadata,
+      metadata: {
+        ...metadata,
+        accent_requested: accent || null,
+        gender_style_requested: genderStyle || null,
+        voice_profile_requested: requestedVoiceProfileCode || null,
+        voice_profile_resolved: voiceProfileCode,
+      },
     });
 
     return res.json({
@@ -121,10 +226,13 @@ router.post("/render", express.json({ limit: "1mb" }), async (req, res) => {
       voice_asset_id: out.asset.id,
       text_item_id: out.textItem.id,
       voice_profile_id: out.voiceProfile.voice_code,
+      accent_requested: accent || null,
+      gender_style_requested: genderStyle || null,
+      voice_profile_resolved: voiceProfileCode,
       text_hash: out.textHash,
       asset_status: out.asset.asset_status,
       expires_at: out.asset.expires_at,
-      audio_url: out.asset.audio_url
+      audio_url: out.asset.audio_url,
     });
   } catch (err) {
     console.error("POST /api/voice/render failed:", err);
