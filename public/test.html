@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MSS Voice Personas</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 980px;
+      margin: 24px auto;
+      padding: 0 16px;
+      line-height: 1.45;
+    }
+
+    h1 { margin-bottom: 6px; }
+
+    .muted {
+      color: #666;
+      margin-bottom: 18px;
+    }
+
+    .row { margin-bottom: 16px; }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    input, select, textarea, button {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px;
+      font-size: 14px;
+    }
+
+    textarea {
+      min-height: 190px;
+      resize: vertical;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+
+    .actions button {
+      width: auto;
+      min-width: 150px;
+      cursor: pointer;
+    }
+
+    audio {
+      width: 100%;
+      margin-top: 8px;
+    }
+
+    pre {
+      background: #f6f6f6;
+      border: 1px solid #ddd;
+      padding: 12px;
+      overflow: auto;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #eef3ff;
+      font-size: 12px;
+      margin-left: 8px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>MSS Voice Personas <span class="pill">OpenAI QA</span></h1>
+
+  <div class="muted">
+    Render the same text through Emma, Jake, Oliver, and Sophie. Listen for clear accent/persona differences.
+  </div>
+
+  <div class="grid">
+    <div class="row">
+      <label for="persona">Persona</label>
+      <select id="persona">
+        <option value="">Loading personas...</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label for="textType">Text Type</label>
+      <select id="textType">
+        <option value="qa">QA</option>
+        <option value="question">Question</option>
+        <option value="answer">Answer</option>
+        <option value="guidance">Guidance</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="row">
+    <label for="textId">Text ID</label>
+    <input id="textId" value="qa:voice_personas_001" />
+  </div>
+
+  <div class="row">
+    <label for="textInput">Test Text</label>
+    <textarea id="textInput">Hi, I grew up in Toronto, and I love meeting people from around the world. On weekends I usually grab a coffee, watch a hockey game, or head up north to spend time at the lake. Today we're going to practise English together.</textarea>
+  </div>
+
+  <div class="actions">
+    <button id="btnStream" type="button">Stream & Play</button>
+    <button id="btnRender" type="button">Render & Play</button>
+    <button id="btnPlay" type="button">Play Again</button>
+    <button id="btnClear" type="button">Clear</button>
+  </div>
+
+  <div class="row">
+    <label>Audio Player</label>
+    <audio id="player" controls></audio>
+  </div>
+
+  <div class="row">
+    <label for="audioUrl">Audio URL</label>
+    <input id="audioUrl" readonly />
+  </div>
+
+  <div class="row">
+    <label>API Response</label>
+    <pre id="output">{}</pre>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    let profiles = [];
+
+    async function loadProfiles() {
+      const res = await fetch("/api/voice/profiles", { cache: "no-store" });
+      const data = await res.json();
+
+      if (!data.ok) {
+        throw new Error(data.error || "profiles_load_failed");
+      }
+
+      profiles = Array.isArray(data.profiles) ? data.profiles : [];
+
+      $("persona").innerHTML = profiles.map((p) => {
+        return `<option value="${p.voice_profile_id}">${p.display_name}</option>`;
+      }).join("");
+    }
+
+    async function renderVoice() {
+      const voiceProfileId = $("persona").value;
+      const text = $("textInput").value.trim();
+
+      if (!voiceProfileId) {
+        $("output").textContent = "No persona selected.";
+        return;
+      }
+
+      if (!text) {
+        $("output").textContent = "No text entered.";
+        return;
+      }
+
+      const payload = {
+        text_id: $("textId").value.trim() || "qa:voice_personas_manual",
+        text_type: $("textType").value,
+        text,
+        storage_type: "long_duration",
+        voice_profile_id: voiceProfileId,
+        metadata: {
+          source_app: "voice-personas-qa",
+          ui: "voice-personas.html"
+        }
+      };
+
+      $("output").textContent = "Rendering...";
+      $("audioUrl").value = "";
+      $("player").removeAttribute("src");
+      $("player").load();
+
+      try {
+        const res = await fetch("/api/voice/render", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        $("output").textContent = JSON.stringify(data, null, 2);
+
+        if (data.audio_url) {
+          $("audioUrl").value = data.audio_url;
+          $("player").src = data.audio_url;
+          $("player").play().catch(() => {});
+        }
+      } catch (err) {
+        $("output").textContent = String(err);
+      }
+    }
+
+    function playAgain() {
+      const url = $("audioUrl").value.trim();
+      if (!url) return;
+      $("player").src = url;
+      $("player").play().catch(() => {});
+    }
+
+    function clearAll() {
+      $("audioUrl").value = "";
+      $("output").textContent = "{}";
+      $("player").removeAttribute("src");
+      $("player").load();
+    }
+    
+    $("btnStream").addEventListener("click", streamVoice);
+    $("btnRender").addEventListener("click", renderVoice);
+    $("btnPlay").addEventListener("click", playAgain);
+    $("btnClear").addEventListener("click", clearAll);
+
+    loadProfiles().catch((err) => {
+      $("output").textContent = `Failed to load personas: ${err}`;
+    });
+
+    async function streamVoice() {
+  const voiceProfileId = $("persona").value;
+  const text = $("textInput").value.trim();
+
+  if (!voiceProfileId) {
+    $("output").textContent = "No persona selected.";
+    return;
+  }
+
+  if (!text) {
+    $("output").textContent = "No text entered.";
+    return;
+  }
+
+  $("output").textContent = "Streaming...";
+  $("audioUrl").value = "";
+  $("player").removeAttribute("src");
+  $("player").load();
+
+  try {
+    const startedAt = performance.now();
+
+    const res = await fetch("/api/voice/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        voice_profile_id: voiceProfileId
+      })
+    });
+
+    if (!res.ok) {
+      const msg = await res.text().catch(() => "");
+      throw new Error(`stream_failed ${res.status}: ${msg}`);
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+
+    $("audioUrl").value = url;
+    $("player").src = url;
+
+    $("output").textContent = JSON.stringify({
+      ok: true,
+      mode: "stream",
+      voice_profile_id: voiceProfileId,
+      bytes: blob.size,
+      elapsed_ms: Math.round(performance.now() - startedAt)
+    }, null, 2);
+
+    $("player").play().catch(() => {});
+  } catch (err) {
+    $("output").textContent = String(err);
+  }
+}
+  </script>
+</body>
+</html>

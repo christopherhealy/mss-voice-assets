@@ -2,13 +2,32 @@ import express from "express";
 import { pool } from "../lib/db.js";
 import { getOrCreateVoiceAsset } from "../lib/getOrCreateVoiceAsset.js";
 import { registerPlayback } from "../lib/registerPlayback.js";
+import { resolveVoiceProfile } from "../lib/resolveVoiceProfile.js";
+import { streamElevenLabsSpeech } from "../lib/streamSpeech.elevenlabs.js";
 
 const router = express.Router();
 
 const DEFAULT_ACCENT = "ca";
 const DEFAULT_GENDER_STYLE = "female";
 
-const SUPPORTED_ACCENTS = new Set(["ca", "us", "uk", "au", "in"]);
+const SUPPORTED_ACCENTS = new Set([
+  "ca",
+  "canadian",
+
+  "us",
+  "usa",
+  "american",
+
+  "uk",
+  "british",
+
+  "au",
+  "australian",
+
+  "in",
+  "indian",
+]);
+
 const SUPPORTED_GENDER_STYLES = new Set(["female", "male"]);
 
 // ----------------------------------------------------------
@@ -17,12 +36,16 @@ const SUPPORTED_GENDER_STYLES = new Set(["female", "male"]);
 // explicit voice_profile_id > accent/gender match > Canadian fallback
 // ----------------------------------------------------------
 function normalizeAccent(value) {
-  const v = String(value || "").trim().toLowerCase();
+  const v = String(value || "")
+    .trim()
+    .toLowerCase();
   return SUPPORTED_ACCENTS.has(v) ? v : DEFAULT_ACCENT;
 }
 
 function normalizeGenderStyle(value) {
-  const v = String(value || "").trim().toLowerCase();
+  const v = String(value || "")
+    .trim()
+    .toLowerCase();
   return SUPPORTED_GENDER_STYLES.has(v) ? v : DEFAULT_GENDER_STYLE;
 }
 
@@ -31,50 +54,33 @@ async function resolveVoiceProfileCode({ voiceProfileCode, accent, genderStyle }
   if (explicit) return explicit;
 
   const safeAccent = normalizeAccent(accent);
-  const safeGenderStyle = normalizeGenderStyle(genderStyle);
 
-  console.log("VOICE_RESOLVE_DEBUG_INPUT", {
+  const map = {
+    ca: "emma",
+    canadian: "emma",
+
+    us: "jake",
+    usa: "jake",
+    american: "jake",
+
+    uk: "oliver",
+    british: "oliver",
+
+    au: "sophie",
+    australian: "sophie",
+  };
+
+  const resolved = map[safeAccent] || "emma";
+
+  console.log("VOICE_RESOLVE_PERSONA", {
     inputAccent: accent,
-    inputGenderStyle: genderStyle,
     safeAccent,
-    safeGenderStyle,
-    db: process.env.DATABASE_URL?.replace(/:[^:@]+@/, ":****@"),
+    inputGenderStyle: genderStyle,
+    resolved,
   });
 
-  const q = await pool.query(
-    `
-    select voice_code, display_name, accent, gender_style, is_default, is_active
-    from voice_profiles
-    where is_active = true
-      and lower(accent) = $1
-      and lower(gender_style) = $2
-    order by is_default desc, display_name asc
-    limit 1
-    `,
-    [safeAccent, safeGenderStyle]
-  );
-
-  console.log("VOICE_RESOLVE_DEBUG_PRIMARY_ROWS", q.rows);
-
-  if (q.rows?.[0]?.voice_code) return q.rows[0].voice_code;
-
-  const fallback = await pool.query(
-    `
-    select voice_code, display_name, accent, gender_style, is_default, is_active
-    from voice_profiles
-    where is_active = true
-      and lower(accent) = $1
-    order by is_default desc, display_name asc
-    limit 1
-    `,
-    [DEFAULT_ACCENT]
-  );
-
-  console.log("VOICE_RESOLVE_DEBUG_FALLBACK_ROWS", fallback.rows);
-
-  return fallback.rows?.[0]?.voice_code || "";
+  return resolved;
 }
-
 // ----------------------------------------------------------
 // Profiles
 // ----------------------------------------------------------
@@ -95,7 +101,11 @@ router.get("/profiles", async (req, res) => {
         region,
         style_prompt,
         is_default,
-        is_active
+        is_active,
+        persona_code,
+        persona_name,
+        city,
+        notes
       from voice_profiles
       where is_active = true
       order by
@@ -119,6 +129,34 @@ router.get("/profiles", async (req, res) => {
   }
 });
 
+router.post("/stream", express.json({ limit: "1mb" }), async (req, res) => {
+  try {
+    const requestedVoiceProfileCode = String(req.body?.voice_profile_id || "").trim();
+
+    const voiceProfileCode = await resolveVoiceProfileCode({
+      voiceProfileCode: requestedVoiceProfileCode,
+      accent: req.body?.accent,
+      genderStyle: req.body?.gender_style || req.body?.kind || DEFAULT_GENDER_STYLE,
+    });
+
+    const voiceProfile = await resolveVoiceProfile(voiceProfileCode);
+
+    await streamElevenLabsSpeech({
+      res,
+      text: req.body?.text,
+      voiceProfile,
+    });
+  } catch (err) {
+    console.error("POST /api/voice/stream failed:", err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        ok: false,
+        error: "stream_failed",
+        message: err.message,
+      });
+    }
+  }
+});
 // ----------------------------------------------------------
 // Playback
 // ----------------------------------------------------------
@@ -166,9 +204,13 @@ router.post("/playback", express.json({ limit: "256kb" }), async (req, res) => {
 router.post("/render", express.json({ limit: "1mb" }), async (req, res) => {
   try {
     const textId = String(req.body?.text_id || "").trim();
-    const textType = String(req.body?.text_type || "").trim().toLowerCase();
+    const textType = String(req.body?.text_type || "")
+      .trim()
+      .toLowerCase();
     const text = String(req.body?.text || "");
-    const storageType = String(req.body?.storage_type || "").trim().toLowerCase();
+    const storageType = String(req.body?.storage_type || "")
+      .trim()
+      .toLowerCase();
 
     const requestedVoiceProfileCode = String(req.body?.voice_profile_id || "").trim();
     const accent = req.body?.accent;

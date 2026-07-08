@@ -19,18 +19,21 @@ function isAllowedOrigin(origin = "") {
   if (!origin) return true;
 
   const exactOrigins = new Set([
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
+  "http://localhost:3010",
+  "http://127.0.0.1:3010",
 
-    "https://www.ingless.io",
-    "https://ingless.io",
-    "https://api.ingless.io",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
 
-    "https://eslsuccess.club",
-    "https://www.eslsuccess.club",
-  ]);
+  "https://www.ingless.io",
+  "https://ingless.io",
+  "https://api.ingless.io",
+
+  "https://eslsuccess.club",
+  "https://www.eslsuccess.club",
+]);
 
   if (exactOrigins.has(origin)) return true;
 
@@ -80,13 +83,11 @@ console.log("STATIC DIR =", path.join(__dirname, "public"));
 // -------------------------
 app.use(express.static(path.join(__dirname, "public")));
 
-// -------------------------
 // HEALTH
-// -------------------------
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    service: "mss-voiceAssets",
+    service: "mss-voicePersonas",
     time: new Date().toISOString()
   });
 });
@@ -105,7 +106,7 @@ app.get("/debug-file", (req, res) => {
 // root
 app.get("/", (req, res) => {
   res.send(`
-    <h1>MSS Voice Assets</h1>
+    <h1>MSS Voice Personas</h1>
     <ul>
       <li><a href="/health">/health</a></li>
       <li><a href="/api/voice/profiles">/api/voice/profiles</a></li>
@@ -118,5 +119,5 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 3010;
 
 app.listen(PORT, () => {
-  console.log(`✅ MSS Voice Assets running on http://localhost:${PORT}`);
+  console.log(`✅ MSS Voice Personas running on http://localhost:${PORT}`);
 });
