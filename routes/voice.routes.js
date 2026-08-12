@@ -54,28 +54,64 @@ async function resolveVoiceProfileCode({ voiceProfileCode, accent, genderStyle }
   if (explicit) return explicit;
 
   const safeAccent = normalizeAccent(accent);
+  const safeGenderStyle = normalizeGenderStyle(genderStyle);
 
+  // Production voice matrix.
+  //
+  // Production 4-accent × 2-gender matrix.
+  // Alex supplies Canadian male; Christopher supplies American male.
   const map = {
-    ca: "emma",
-    canadian: "emma",
+    ca: {
+      female: "emma",
+      male: "alex",
+    },
+    canadian: {
+      female: "emma",
+      male: "alex",
+    },
 
-    us: "jake",
-    usa: "jake",
-    american: "jake",
+    us: {
+      female: "jake",
+      male: "christopher",
+    },
+    usa: {
+      female: "jake",
+      male: "christopher",
+    },
+    american: {
+      female: "jake",
+      male: "christopher",
+    },
 
-    uk: "oliver",
-    british: "oliver",
+    uk: {
+      female: "charlotte",
+      male: "oliver",
+    },
+    british: {
+      female: "charlotte",
+      male: "oliver",
+    },
 
-    au: "sophie",
-    australian: "sophie",
+    au: {
+      female: "sophie",
+      male: "steve",
+    },
+    australian: {
+      female: "sophie",
+      male: "steve",
+    },
   };
 
-  const resolved = map[safeAccent] || "emma";
+  const resolved =
+    map[safeAccent]?.[safeGenderStyle] ||
+    map.ca?.[safeGenderStyle] ||
+    "emma";
 
   console.log("VOICE_RESOLVE_PERSONA", {
     inputAccent: accent,
     safeAccent,
     inputGenderStyle: genderStyle,
+    safeGenderStyle,
     resolved,
   });
 
