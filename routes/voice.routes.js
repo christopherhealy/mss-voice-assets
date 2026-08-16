@@ -177,6 +177,11 @@ router.post("/stream", express.json({ limit: "1mb" }), async (req, res) => {
 
     const voiceProfile = await resolveVoiceProfile(voiceProfileCode);
 
+    // streamElevenLabsSpeech owns provider-level telemetry headers
+    // (provider/model/voice/characters/cost/request id). The calling
+    // Ingle proxy can combine those authoritative provider measurements
+    // with its own frame/gate/turn context without coupling VoiceAssets
+    // to the Ingle database.
     await streamElevenLabsSpeech({
       res,
       text: req.body?.text,
