@@ -355,7 +355,7 @@ router.post("/render", express.json({ limit: "1mb" }), async (req, res) => {
       ok: false,
       error: "render_failed",
       message: err.message,
-    }); 
+    });
   }
 });
 
