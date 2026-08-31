@@ -306,16 +306,48 @@ router.post("/render", express.json({ limit: "1mb" }), async (req, res) => {
     return res.json({
       ok: true,
       cache_hit: out.cacheHit,
+
       voice_asset_id: out.asset.id,
       text_item_id: out.textItem.id,
+
       voice_profile_id: out.voiceProfile.voice_code,
       accent_requested: accent || null,
       gender_style_requested: genderStyle || null,
       voice_profile_resolved: voiceProfileCode,
+
       text_hash: out.textHash,
       asset_status: out.asset.asset_status,
       expires_at: out.asset.expires_at,
+
+      // Durable object identity / delivery.
+      storage_key: out.asset.storage_key || null,
+      audio_key: out.asset.storage_key || null,
       audio_url: out.asset.audio_url,
+
+      // Generation provenance. On a cache hit these describe the
+      // original generation; callers must use cache_hit to decide
+      // whether provider usage occurred on THIS request.
+      generation_provider:
+        out.asset.generation_provider || null,
+
+      generation_model:
+        out.asset.generation_model || null,
+
+      character_count:
+        Number(out.asset.character_count || 0),
+
+      generation_ms:
+        out.asset.generation_ms == null
+          ? null
+          : Number(out.asset.generation_ms),
+
+      generation_cost_usd:
+        out.asset.generation_cost_usd == null
+          ? null
+          : Number(out.asset.generation_cost_usd),
+
+      provider_request_id:
+        out.asset.provider_request_id || null,
     });
   } catch (err) {
     console.error("POST /api/voice/render failed:", err);
