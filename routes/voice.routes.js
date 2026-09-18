@@ -2,7 +2,7 @@ import express from "express";
 import { pool } from "../lib/db.js";
 import { getOrCreateVoiceAsset } from "../lib/getOrCreateVoiceAsset.js";
 import { registerPlayback } from "../lib/registerPlayback.js";
-import { resolveVoiceProfile } from "../lib/resolveVoiceProfile.js";
+import { resolveVoiceProfile, resolveDefaultVoiceProfile } from "../lib/resolveVoiceProfile.js";
 import { streamElevenLabsSpeech } from "../lib/streamSpeech.elevenlabs.js";
 import { normalizeText } from "../lib/normalizeText.js";
 import { hashText } from "../lib/hashText.js";
@@ -123,6 +123,45 @@ async function resolveVoiceProfileCode({ voiceProfileCode, accent, genderStyle }
   });
 
   return resolved;
+}
+
+// ----------------------------------------------------------
+// Unified runtime resolver
+// explicit voice > practice-language default > legacy accent/gender
+// ----------------------------------------------------------
+async function resolveRuntimeVoiceProfile({
+  voiceProfileCode,
+  practiceLanguage,
+  locale,
+  accent,
+  genderStyle,
+}) {
+  const explicit = String(voiceProfileCode || "").trim();
+  if (explicit) {
+    return { voiceProfile: await resolveVoiceProfile(explicit), resolution: "explicit" };
+  }
+
+  if (String(practiceLanguage || "").trim()) {
+    return {
+      voiceProfile: await resolveDefaultVoiceProfile({
+        practiceLanguage,
+        genderStyle,
+        locale,
+      }),
+      resolution: "practice_language",
+    };
+  }
+
+  const legacyCode = await resolveVoiceProfileCode({
+    voiceProfileCode: "",
+    accent,
+    genderStyle,
+  });
+
+  return {
+    voiceProfile: await resolveVoiceProfile(legacyCode),
+    resolution: "legacy_accent",
+  };
 }
 
 // ----------------------------------------------------------
@@ -370,6 +409,311 @@ async function pumpStreamJob(job) {
 }
 
 // ----------------------------------------------------------
+// Voice Curator V1 — read-only ElevenLabs discovery
+// ----------------------------------------------------------
+function curatorApiKey() {
+  const key = String(process.env.ELEVENLABS_API_KEY || "").trim();
+  if (!key) throw new Error("missing_elevenlabs_api_key");
+  return key;
+}
+
+async function curatorGet(url) {
+  const r = await fetch(url, {
+    headers: { "xi-api-key": curatorApiKey(), Accept: "application/json" },
+  });
+  const raw = await r.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch { data = { raw }; }
+  if (!r.ok) throw new Error(`elevenlabs_api_failed: ${r.status} ${data?.detail?.message || data?.message || raw}`);
+  return data;
+}
+
+router.get("/curator/account", async (req, res) => {
+  try {
+    const s = await curatorGet("https://api.elevenlabs.io/v1/user/subscription");
+    const used = Number(s.character_count || 0);
+    const limit = Number(s.character_limit || 0);
+    return res.json({
+      ok: true,
+      account: {
+        tier: s.tier || null,
+        status: s.status || null,
+        character_count: used,
+        character_limit: limit,
+        remaining: limit ? Math.max(0, limit - used) : null,
+        next_character_count_reset_unix: s.next_character_count_reset_unix || null,
+      },
+    });
+  } catch (err) {
+    console.error("GET /api/voice/curator/account failed:", err);
+    return res.status(502).json({ ok: false, error: "curator_account_failed", message: err.message });
+  }
+});
+
+router.get("/curator/search", async (req, res) => {
+  try {
+    const language = String(req.query.language || "").trim().toLowerCase();
+    const locale = String(req.query.locale || "").trim();
+    const accent = String(req.query.accent || "").trim().toLowerCase();
+    const gender = String(req.query.gender || "").trim().toLowerCase();
+    const pageSize = Math.min(20, Math.max(1, parseInt(req.query.page_size || "5", 10) || 5));
+
+    if (!language) return res.status(400).json({ ok: false, error: "missing_language" });
+
+    // Discovery is intentionally broad. Locale/accent are qualification
+    // criteria below, not ElevenLabs server-side filters. This prevents
+    // valid multilingual performers from being filtered out before we can
+    // inspect their verified_languages metadata.
+    const discoveryPageSize = Math.max(30, pageSize);
+    const qs = new URLSearchParams({
+      language,
+      page_size: String(discoveryPageSize),
+      sort: "trending",
+    });
+    if (gender) qs.set("gender", gender);
+
+    const data = await curatorGet(`https://api.elevenlabs.io/v1/shared-voices?${qs}`);
+    const voices = (Array.isArray(data.voices) ? data.voices : []).map(v => ({
+      public_owner_id: v.public_owner_id || null,
+      voice_id: v.voice_id || null,
+      name: v.name || null,
+      accent: v.accent || null,
+      gender: v.gender || null,
+      age: v.age || null,
+      descriptive: v.descriptive || null,
+      use_case: v.use_case || null,
+      category: v.category || null,
+      language: v.language || null,
+      description: v.description || null,
+      preview_url: v.preview_url || null,
+      verified_languages: Array.isArray(v.verified_languages) ? v.verified_languages : [],
+    }));
+
+    const voiceCodes = voices.map(v => v.voice_id).filter(Boolean);
+    let approvedByCode = new Map();
+
+    if (voiceCodes.length) {
+      const approved = await pool.query(
+        `
+          select
+            id,
+            voice_code,
+            display_name,
+            is_default,
+            is_active,
+            language,
+            locale,
+            accent,
+            gender_style
+          from voice_profiles
+          where provider = 'elevenlabs'
+            and voice_code = any($1::text[])
+        `,
+        [voiceCodes],
+      );
+
+      approvedByCode = new Map(
+        approved.rows.map(row => [String(row.voice_code), row]),
+      );
+    }
+
+    const decoratedVoices = voices.map(v => {
+      const verified = Array.isArray(v.verified_languages) ? v.verified_languages : [];
+      const localeMatches = locale
+        ? verified.filter(item => String(item?.locale || "").toLowerCase() === locale.toLowerCase())
+        : [];
+
+      const primaryLanguageMatch =
+        String(v.language || "").toLowerCase() === language;
+
+      const verifiedLocaleMatch =
+        !locale || localeMatches.length > 0;
+
+      return {
+        ...v,
+        approved: approvedByCode.has(String(v.voice_id)),
+        registry: approvedByCode.get(String(v.voice_id)) || null,
+        match: {
+          verified_locale_match: verifiedLocaleMatch,
+          primary_language_match: primaryLanguageMatch,
+          locale_verified: localeMatches.length > 0,
+          requested_language: language,
+          requested_locale: locale || null,
+          primary_language: v.language || null,
+          verified_locale_matches: localeMatches,
+        },
+      };
+    });
+
+    const verifiedMatches = decoratedVoices.filter(
+      v => v.match?.verified_locale_match === true,
+    );
+    const otherMatches = decoratedVoices.filter(
+      v => v.match?.verified_locale_match !== true,
+    );
+
+    // Show verified locale matches first. Fill any remaining slots with
+    // previewable non-matches so the curator can see what was discovered,
+    // while approval remains disabled for those entries.
+    const rankedVoices = [...verifiedMatches, ...otherMatches].slice(0, pageSize);
+
+    return res.json({
+      ok: true,
+      query: {
+        language,
+        locale: locale || null,
+        accent: accent || null,
+        gender: gender || null,
+        requested_page_size: pageSize,
+        discovery_page_size: discoveryPageSize,
+      },
+      total_count: Number(data.total_count || decoratedVoices.length),
+      verified_match_count: verifiedMatches.length,
+      discovered_count: decoratedVoices.length,
+      has_more: Boolean(data.has_more),
+      voices: rankedVoices,
+    });
+  } catch (err) {
+    console.error("GET /api/voice/curator/search failed:", err);
+    return res.status(502).json({ ok: false, error: "curator_search_failed", message: err.message });
+  }
+});
+
+router.post("/curator/approve", express.json({ limit: "256kb" }), async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const language = String(req.body?.language || "").trim().toLowerCase();
+    const locale = String(req.body?.locale || "").trim();
+    const accent = String(req.body?.accent || "").trim().toLowerCase();
+    const gender = String(req.body?.gender || "").trim().toLowerCase();
+    const region = String(req.body?.region || "").trim() || null;
+    const voices = Array.isArray(req.body?.voices) ? req.body.voices : [];
+
+    if (!language || !locale || !gender) {
+      return res.status(400).json({ ok: false, error: "missing_voice_category" });
+    }
+    if (!voices.length) {
+      return res.status(400).json({ ok: false, error: "no_voices_selected" });
+    }
+
+    const defaults = voices.filter(v => v?.is_default === true);
+    if (defaults.length > 1) {
+      return res.status(400).json({ ok: false, error: "multiple_defaults_selected" });
+    }
+
+    await client.query("BEGIN");
+
+    if (defaults.length === 1) {
+      await client.query(
+        `
+          update voice_profiles
+          set is_default = false, updated_at = now()
+          where provider = 'elevenlabs'
+            and language = $1
+            and locale = $2
+            and gender_style = $3
+        `,
+        [language, locale, gender],
+      );
+    }
+
+    const saved = [];
+
+    for (const voice of voices) {
+      const voiceCode = String(voice?.voice_id || "").trim();
+      const displayName = String(voice?.name || "").trim();
+
+      if (!voiceCode || !displayName) {
+        throw new Error("invalid_selected_voice");
+      }
+
+      const metadata = {
+        public_owner_id: voice?.public_owner_id || null,
+        verified_languages: Array.isArray(voice?.verified_languages)
+          ? voice.verified_languages
+          : [],
+        age: voice?.age || null,
+        use_case: voice?.use_case || null,
+        category: voice?.category || null,
+        descriptive: voice?.descriptive || null,
+        description: voice?.description || null,
+        preview_url: voice?.preview_url || null,
+        curated_at: new Date().toISOString(),
+      };
+
+      const q = await client.query(
+        `
+          insert into voice_profiles (
+            provider,
+            voice_code,
+            display_name,
+            accent,
+            locale,
+            gender_style,
+            is_active,
+            notes,
+            language,
+            region,
+            is_default,
+            provider_metadata_json,
+            updated_at
+          )
+          values (
+            'elevenlabs', $1, $2, $3, $4, $5, true, $6,
+            $7, $8, $9, $10::jsonb, now()
+          )
+          on conflict (provider, voice_code)
+          do update set
+            display_name = excluded.display_name,
+            accent = excluded.accent,
+            locale = excluded.locale,
+            gender_style = excluded.gender_style,
+            is_active = true,
+            notes = excluded.notes,
+            language = excluded.language,
+            region = excluded.region,
+            is_default = excluded.is_default,
+            provider_metadata_json = excluded.provider_metadata_json,
+            updated_at = now()
+          returning
+            id, provider, voice_code, display_name, accent, locale,
+            gender_style, language, region, is_default, is_active
+        `,
+        [
+          voiceCode,
+          displayName,
+          accent || voice?.accent || null,
+          locale,
+          gender,
+          voice?.description || null,
+          language,
+          region,
+          voice?.is_default === true,
+          JSON.stringify(metadata),
+        ],
+      );
+
+      saved.push(q.rows[0]);
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({ ok: true, saved_count: saved.length, profiles: saved });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("POST /api/voice/curator/approve failed:", err);
+    return res.status(500).json({
+      ok: false,
+      error: "curator_approve_failed",
+      message: err.message,
+    });
+  } finally {
+    client.release();
+  }
+});
+
+// ----------------------------------------------------------
 // Profiles
 // ----------------------------------------------------------
 router.get("/profiles", async (req, res) => {
@@ -421,13 +765,13 @@ router.post("/stream", express.json({ limit: "1mb" }), async (req, res) => {
   try {
     const requestedVoiceProfileCode = String(req.body?.voice_profile_id || "").trim();
 
-    const voiceProfileCode = await resolveVoiceProfileCode({
+    const { voiceProfile } = await resolveRuntimeVoiceProfile({
       voiceProfileCode: requestedVoiceProfileCode,
+      practiceLanguage: req.body?.practice_language,
+      locale: req.body?.locale,
       accent: req.body?.accent,
       genderStyle: req.body?.gender_style || req.body?.kind || DEFAULT_GENDER_STYLE,
     });
-
-    const voiceProfile = await resolveVoiceProfile(voiceProfileCode);
 
     // streamElevenLabsSpeech owns provider-level telemetry headers
     // (provider/model/voice/characters/cost/request id). The calling
@@ -485,13 +829,13 @@ router.post("/stream-cache", express.json({ limit: "1mb" }), async (req, res) =>
     const accent = req.body?.accent;
     const genderStyle = req.body?.gender_style || req.body?.kind || DEFAULT_GENDER_STYLE;
 
-    const voiceProfileCode = await resolveVoiceProfileCode({
+    const { voiceProfile } = await resolveRuntimeVoiceProfile({
       voiceProfileCode: requestedVoiceProfileCode,
+      practiceLanguage: req.body?.practice_language,
+      locale: req.body?.locale,
       accent,
       genderStyle,
     });
-
-    const voiceProfile = await resolveVoiceProfile(voiceProfileCode);
     const textHash = hashText(text);
 
     const textItem = await getOrCreateTextItem({
@@ -756,18 +1100,16 @@ router.post("/render", express.json({ limit: "1mb" }), async (req, res) => {
       return res.status(400).json({ ok: false, error: "missing_storage_type" });
     }
 
-    const voiceProfileCode = await resolveVoiceProfileCode({
-      voiceProfileCode: requestedVoiceProfileCode,
-      accent,
-      genderStyle,
-    });
-
-    if (!voiceProfileCode) {
-      return res.status(400).json({
-        ok: false,
-        error: "voice_profile_resolution_failed",
+    const { voiceProfile: resolvedVoiceProfile, resolution: voiceResolution } =
+      await resolveRuntimeVoiceProfile({
+        voiceProfileCode: requestedVoiceProfileCode,
+        practiceLanguage: req.body?.practice_language,
+        locale: req.body?.locale,
+        accent,
+        genderStyle,
       });
-    }
+
+    const voiceProfileCode = resolvedVoiceProfile.voice_code;
 
     const out = await getOrCreateVoiceAsset({
       textId,
@@ -777,10 +1119,13 @@ router.post("/render", express.json({ limit: "1mb" }), async (req, res) => {
       voiceProfileCode,
       metadata: {
         ...metadata,
+        practice_language_requested: req.body?.practice_language || null,
+        locale_requested: req.body?.locale || null,
         accent_requested: accent || null,
         gender_style_requested: genderStyle || null,
         voice_profile_requested: requestedVoiceProfileCode || null,
         voice_profile_resolved: voiceProfileCode,
+        voice_resolution: voiceResolution,
       },
     });
 
@@ -795,6 +1140,9 @@ router.post("/render", express.json({ limit: "1mb" }), async (req, res) => {
       accent_requested: accent || null,
       gender_style_requested: genderStyle || null,
       voice_profile_resolved: voiceProfileCode,
+      voice_resolution: voiceResolution,
+      practice_language_requested: req.body?.practice_language || null,
+      locale_requested: req.body?.locale || null,
 
       text_hash: out.textHash,
       asset_status: out.asset.asset_status,

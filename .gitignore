@@ -1,3 +1,7 @@
+# Local / internal admin tools
+
+voice-curator-v1.html
+
 node_modules
 .env
 .DS_Store
