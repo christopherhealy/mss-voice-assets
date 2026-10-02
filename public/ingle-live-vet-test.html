@@ -1,0 +1,811 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+
+  <title>Ingle GPT-Live Vet Test — T5 DB Context</title>
+
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 760px;
+      margin: 40px auto;
+      padding: 0 20px;
+      line-height: 1.5;
+      color: #222;
+    }
+
+    h1 {
+      margin-bottom: 6px;
+    }
+
+    .sub {
+      color: #666;
+      margin-top: 0;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin: 24px 0;
+    }
+
+    button, select {
+      font: inherit;
+      padding: 10px 18px;
+    }
+    button { cursor: pointer; }
+    .voice-control { margin: 20px 0 0; }
+    .voice-control label { display: block; font-weight: 600; margin-bottom: 6px; }
+    .voice-control select { min-width: 320px; }
+
+    button:disabled {
+      cursor: default;
+      opacity: 0.5;
+    }
+
+    .status {
+      padding: 14px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      background: #fafafa;
+    }
+
+    .status strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    pre {
+      background: #111;
+      color: #eee;
+      padding: 16px;
+      border-radius: 8px;
+      overflow: auto;
+      min-height: 220px;
+      max-height: 420px;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>Ingle GPT-Live Test — T5</h1>
+
+  <p class="sub">
+    Dr. Jan — Vet Level 1 context loaded from DATABASE
+  </p>
+
+  <div class="voice-control">
+    <label for="voiceSelect">GPT-Live voice</label>
+    <select id="voiceSelect">
+      <option value="marin" selected>Marin — Default</option>
+      <option value="gleam">Gleam — North American · Female</option>
+      <option value="meridian">Meridian — North American · Male</option>
+      <option value="vesper">Vesper — British · Male</option>
+      <option value="quartz">Quartz — Australian · Female</option>
+      <option value="ripple">Ripple — Australian · Male</option>
+      <option value="willow">Willow — Irish · Female</option>
+      <option value="stone">Stone — Irish · Male</option>
+    </select>
+  </div>
+
+  <div class="voice-control">
+    <label for="rendererSelect">Host audio renderer</label>
+    <select id="rendererSelect">
+      <option value="openai" selected>OpenAI GPT-Live — native audio</option>
+      <option value="elevenlabs">ElevenLabs — transcript → streaming TTS</option>
+    </select>
+  </div>
+
+  <div class="voice-control">
+    <label for="elevenVoiceSelect">ElevenLabs voice</label>
+    <select id="elevenVoiceSelect" disabled>
+      <option value="emma" selected>Emma — Canadian · Female</option>
+      <option value="alex">Alex — Canadian · Male</option>
+      <option value="jake">Jake — American · Female</option>
+      <option value="christopher">Christopher — American · Male</option>
+      <option value="charlotte">Charlotte — British · Female</option>
+      <option value="oliver">Oliver — British · Male</option>
+      <option value="sophie">Sophie — Australian · Female</option>
+      <option value="steve">Steve — Australian · Male</option>
+    </select>
+  </div>
+
+  <div class="controls">
+    <button id="startBtn">Start conversation</button>
+    <button id="stopBtn" disabled>End conversation</button>
+  </div>
+
+  <div class="status">
+    <strong>Status</strong>
+    <span id="status">Ready.</span>
+  </div>
+
+  <h2>Live events</h2>
+  <pre id="log"></pre>
+
+  <script>
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const voiceSelect = document.getElementById("voiceSelect");
+    const rendererSelect = document.getElementById("rendererSelect");
+    const elevenVoiceSelect = document.getElementById("elevenVoiceSelect");
+    const statusEl = document.getElementById("status");
+    const logEl = document.getElementById("log");
+
+    let pc = null;
+    let dc = null;
+    let microphone = null;
+    let remoteAudio = null;
+
+    let sessionStarted = false;
+    let sessionClosed = false;
+    let hostOpeningRequested = false;
+
+    let elevenAudio = null;
+    let elevenQueue = [];
+    let elevenPlaying = false;
+    let hostTranscriptBuffer = "";
+    let hostTranscriptFlushTimer = null;
+    let lastHostTranscriptEndMs = 0;
+
+    const HOST_TRANSCRIPT_GAP_MS = 650;
+
+
+    // --------------------------------------------------------
+    // Logging
+    // --------------------------------------------------------
+
+    function log(label, value = null) {
+      const time = new Date().toLocaleTimeString();
+
+      let line = `[${time}] ${label}`;
+
+      if (value !== null && value !== undefined) {
+        try {
+          line += "\n" + JSON.stringify(value, null, 2);
+        } catch {
+          line += "\n" + String(value);
+        }
+      }
+
+      logEl.textContent += line + "\n\n";
+      logEl.scrollTop = logEl.scrollHeight;
+
+      console.log(label, value ?? "");
+    }
+
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+      log("STATUS: " + text);
+    }
+
+
+    // --------------------------------------------------------
+    // Wait for ICE gathering
+    // --------------------------------------------------------
+
+    function waitForIceGatheringComplete(connection) {
+      if (connection.iceGatheringState === "complete") {
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        function checkState() {
+          if (connection.iceGatheringState === "complete") {
+            connection.removeEventListener(
+              "icegatheringstatechange",
+              checkState
+            );
+
+            resolve();
+          }
+        }
+
+        connection.addEventListener(
+          "icegatheringstatechange",
+          checkState
+        );
+      });
+    }
+
+
+    // --------------------------------------------------------
+    // T3 ElevenLabs renderer
+    // --------------------------------------------------------
+
+    function usingElevenLabs() {
+      return rendererSelect.value === "elevenlabs";
+    }
+
+
+    function scheduleHostTranscriptFlush() {
+      clearTimeout(hostTranscriptFlushTimer);
+
+      hostTranscriptFlushTimer = setTimeout(() => {
+        flushHostTranscript();
+      }, HOST_TRANSCRIPT_GAP_MS);
+    }
+
+
+    function addHostTranscriptDelta(event) {
+      const delta = String(event?.delta || "");
+
+      if (!delta) return;
+
+      const startMs = Number(event?.start_ms || 0);
+      const endMs = Number(event?.end_ms || 0);
+
+      // A substantial timeline gap is our best available signal that
+      // GPT-Live has begun a new spoken utterance.
+      if (
+        hostTranscriptBuffer.trim() &&
+        startMs &&
+        lastHostTranscriptEndMs &&
+        startMs - lastHostTranscriptEndMs > HOST_TRANSCRIPT_GAP_MS
+      ) {
+        flushHostTranscript();
+      }
+
+      hostTranscriptBuffer += delta;
+
+      if (endMs) {
+        lastHostTranscriptEndMs = endMs;
+      }
+
+      scheduleHostTranscriptFlush();
+    }
+
+
+    function flushHostTranscript() {
+      clearTimeout(hostTranscriptFlushTimer);
+      hostTranscriptFlushTimer = null;
+
+      const text = hostTranscriptBuffer.trim();
+
+      hostTranscriptBuffer = "";
+      lastHostTranscriptEndMs = 0;
+
+      if (!text || !usingElevenLabs()) return;
+
+      log("ELEVENLABS QUEUE", {
+        voice: elevenVoiceSelect.value,
+        text
+      });
+
+      elevenQueue.push(text);
+      void playNextElevenLabsUtterance();
+    }
+
+
+    async function playNextElevenLabsUtterance() {
+      if (
+        elevenPlaying ||
+        !usingElevenLabs() ||
+        !elevenQueue.length
+      ) {
+        return;
+      }
+
+      elevenPlaying = true;
+
+      const text = elevenQueue.shift();
+      const voiceProfileId = elevenVoiceSelect.value;
+      const startedAt = performance.now();
+
+      try {
+        const response = await fetch("/api/voice/stream", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg"
+          },
+          body: JSON.stringify({
+            text,
+            voice_profile_id: voiceProfileId
+          })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+
+          throw new Error(
+            errorText ||
+            `ElevenLabs stream failed (${response.status})`
+          );
+        }
+
+        const audioBlob = await response.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+
+        log("ELEVENLABS AUDIO READY", {
+          voice: voiceProfileId,
+          textChars: text.length,
+          requestMs: Math.round(performance.now() - startedAt),
+          provider: response.headers.get("X-Voice-Provider"),
+          model: response.headers.get("X-Voice-Model"),
+          providerVoice: response.headers.get("X-Voice-Code")
+        });
+
+        elevenAudio = new Audio(audioUrl);
+
+        elevenAudio.addEventListener("ended", () => {
+          URL.revokeObjectURL(audioUrl);
+          elevenAudio = null;
+          elevenPlaying = false;
+          void playNextElevenLabsUtterance();
+        }, { once: true });
+
+        elevenAudio.addEventListener("error", () => {
+          URL.revokeObjectURL(audioUrl);
+          elevenAudio = null;
+          elevenPlaying = false;
+          log("ELEVENLABS AUDIO PLAYBACK ERROR");
+          void playNextElevenLabsUtterance();
+        }, { once: true });
+
+        await elevenAudio.play();
+
+      } catch (err) {
+        elevenPlaying = false;
+
+        log("ELEVENLABS RENDER FAILED", {
+          message: err?.message || String(err)
+        });
+
+        void playNextElevenLabsUtterance();
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // Host opens the real-world interaction
+    // --------------------------------------------------------
+
+    function requestHostOpening() {
+      if (hostOpeningRequested) return;
+      if (!dc || dc.readyState !== "open") return;
+
+      hostOpeningRequested = true;
+
+      log("Requesting host opening.");
+
+      dc.send(
+        JSON.stringify({
+          type: "session.commentary.append",
+          delegation_id: null,
+          content: "Begin the appointment now with your natural opening."
+        })
+      );
+    }
+
+
+    // --------------------------------------------------------
+    // Incoming GPT-Live events
+    // --------------------------------------------------------
+
+    function handleLiveEvent(event) {
+      log("LIVE EVENT: " + event.type, event);
+
+      if (event.type === "session.output_transcript.delta") {
+        if (usingElevenLabs()) {
+          addHostTranscriptDelta(event);
+        }
+        return;
+      }
+
+      if (event.type === "session.started") {
+        sessionStarted = true;
+
+        setStatus(
+          `Connected to Dr. Jan — ${event.session?.id || "Live session"}`
+        );
+
+        stopBtn.disabled = false;
+        requestHostOpening();
+        return;
+      }
+
+      if (event.type === "session.closed") {
+        sessionClosed = true;
+
+        setStatus("Conversation ended.");
+
+        if (event.usage) {
+          log("FINAL SESSION USAGE", event.usage);
+        }
+
+        cleanup();
+        return;
+      }
+
+      if (event.type === "error") {
+        console.error("GPT-Live error:", event);
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // Start conversation
+    // --------------------------------------------------------
+
+    async function startConversation() {
+      startBtn.disabled = true;
+      stopBtn.disabled = true;
+      voiceSelect.disabled = true;
+      rendererSelect.disabled = true;
+      elevenVoiceSelect.disabled = true;
+
+      sessionStarted = false;
+      sessionClosed = false;
+      hostOpeningRequested = false;
+
+      logEl.textContent = "";
+
+      try {
+
+        // ----------------------------------------------------
+        // 1. Microphone
+        // ----------------------------------------------------
+
+        setStatus("Requesting microphone…");
+
+        microphone = await navigator.mediaDevices.getUserMedia({
+          audio: true
+        });
+
+        log("Microphone granted.");
+
+
+        // ----------------------------------------------------
+        // 2. Peer connection
+        // ----------------------------------------------------
+
+        setStatus("Creating WebRTC connection…");
+
+        pc = new RTCPeerConnection();
+
+        pc.addEventListener("connectionstatechange", () => {
+          log("Peer connection state: " + pc.connectionState);
+        });
+
+        pc.addEventListener("iceconnectionstatechange", () => {
+          log("ICE connection state: " + pc.iceConnectionState);
+        });
+
+
+        // ----------------------------------------------------
+        // 3. Send microphone track
+        // ----------------------------------------------------
+
+        for (const track of microphone.getTracks()) {
+          pc.addTrack(track, microphone);
+        }
+
+
+        // ----------------------------------------------------
+        // 4. Receive GPT-Live audio
+        // ----------------------------------------------------
+
+        remoteAudio = document.createElement("audio");
+
+        remoteAudio.autoplay = true;
+        remoteAudio.playsInline = true;
+
+        pc.addEventListener("track", (event) => {
+          log("Remote audio track received.");
+
+          const stream =
+            event.streams?.[0] ||
+            new MediaStream([event.track]);
+
+          remoteAudio.srcObject = stream;
+
+          // Keep the GPT-Live media track connected so the Live session
+          // retains its natural conversational timing. In ElevenLabs mode
+          // we simply do not let the learner hear OpenAI's native voice.
+          remoteAudio.muted = usingElevenLabs();
+
+          log("Host renderer active.", {
+            renderer: rendererSelect.value,
+            openAiAudioMuted: remoteAudio.muted,
+            elevenLabsVoice: usingElevenLabs()
+              ? elevenVoiceSelect.value
+              : null
+          });
+
+          remoteAudio.play().catch((err) => {
+            log("Remote audio autoplay warning", {
+              message: err.message
+            });
+          });
+        });
+
+
+        // ----------------------------------------------------
+        // 5. GPT-Live event channel
+        //
+        // Must exist before SDP offer creation.
+        // ----------------------------------------------------
+
+        dc = pc.createDataChannel("oai-events");
+
+        dc.addEventListener("open", () => {
+          log("GPT-Live data channel open.");
+        });
+
+        dc.addEventListener("message", ({ data }) => {
+          try {
+            const event = JSON.parse(data);
+            handleLiveEvent(event);
+          } catch {
+            log("Unparseable data-channel message", data);
+          }
+        });
+
+        dc.addEventListener("close", () => {
+          log("GPT-Live data channel closed.");
+
+          if (!sessionClosed) {
+            setStatus(
+              "Disconnected before final session usage was received."
+            );
+          }
+        });
+
+
+        // ----------------------------------------------------
+        // 6. Create browser SDP offer
+        // ----------------------------------------------------
+
+        setStatus("Creating connection offer…");
+
+        const offer = await pc.createOffer();
+
+        await pc.setLocalDescription(offer);
+
+        await waitForIceGatheringComplete(pc);
+
+        const offerSdp = pc.localDescription?.sdp;
+
+        if (!offerSdp) {
+          throw new Error(
+            "Browser did not produce an SDP offer."
+          );
+        }
+
+        log("Browser SDP offer ready.", {
+          type: pc.localDescription.type,
+          bytes: offerSdp.length
+        });
+
+
+        // ----------------------------------------------------
+        // 7. Voice Assets creates GPT-Live session
+        //
+        // SDP is sent raw as application/sdp.
+        // Voice Assets returns the raw SDP answer.
+        // ----------------------------------------------------
+
+        const selectedVoice = voiceSelect.value;
+        setStatus(`Starting GPT-Live session — ${selectedVoice}…`);
+        log("Selected conversation audio.", {
+          renderer: rendererSelect.value,
+          gptLiveVoice: selectedVoice,
+          elevenLabsVoice: usingElevenLabs()
+            ? elevenVoiceSelect.value
+            : null
+        });
+
+        const response = await fetch(
+          `/api/conversation/live/session?experience=visit_veterinarian&level=1&voice=${encodeURIComponent(selectedVoice)}`,
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type": "application/sdp",
+              "Accept": "application/sdp"
+            },
+
+            body: offerSdp
+          }
+        );
+
+        if (!response.ok) {
+          const errorText = await response.text();
+
+          throw new Error(
+            errorText ||
+            `Session request failed (${response.status})`
+          );
+        }
+
+        const answerSdp = await response.text();
+
+        if (!answerSdp) {
+          throw new Error(
+            "Voice Assets returned no GPT-Live SDP answer."
+          );
+        }
+
+        log("Voice Assets created Live session.", {
+          answerBytes: answerSdp.length
+        });
+
+
+        // ----------------------------------------------------
+        // 8. Apply OpenAI SDP answer
+        // ----------------------------------------------------
+
+        await pc.setRemoteDescription({
+          type: "answer",
+          sdp: answerSdp
+        });
+
+        
+
+        setStatus("Connecting to Dr. Jan…");
+
+        log("OpenAI SDP answer applied.");
+
+        // We now wait for the GPT-Live data channel and
+        // session.started event.
+
+      } catch (err) {
+
+        console.error(err);
+
+        log("START FAILED", {
+          name: err?.name || null,
+          message: err?.message || String(err)
+        });
+
+        setStatus(
+          "Failed: " +
+          (err?.message || String(err))
+        );
+
+        cleanup();
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // End conversation
+    // --------------------------------------------------------
+
+    function endConversation() {
+      stopBtn.disabled = true;
+
+      if (
+        dc &&
+        dc.readyState === "open" &&
+        sessionStarted &&
+        !sessionClosed
+      ) {
+        setStatus("Ending conversation…");
+
+        log("Sending session.close.");
+
+        dc.send(
+          JSON.stringify({
+            type: "session.close"
+          })
+        );
+
+        // Give GPT-Live time to return session.closed
+        // and final usage before tearing WebRTC down.
+
+        setTimeout(() => {
+          if (!sessionClosed) {
+            log(
+              "No session.closed received — forcing cleanup."
+            );
+
+            cleanup();
+          }
+        }, 5000);
+
+        return;
+      }
+
+      cleanup();
+    }
+
+
+    // --------------------------------------------------------
+    // Cleanup
+    // --------------------------------------------------------
+
+    function cleanup() {
+
+      if (microphone) {
+        for (const track of microphone.getTracks()) {
+          track.stop();
+        }
+      }
+
+      microphone = null;
+
+      clearTimeout(hostTranscriptFlushTimer);
+      hostTranscriptFlushTimer = null;
+      hostTranscriptBuffer = "";
+      lastHostTranscriptEndMs = 0;
+      elevenQueue = [];
+
+      if (elevenAudio) {
+        elevenAudio.pause();
+        elevenAudio.src = "";
+      }
+
+      elevenAudio = null;
+      elevenPlaying = false;
+
+
+      if (remoteAudio) {
+        remoteAudio.pause();
+        remoteAudio.srcObject = null;
+        remoteAudio.remove();
+      }
+
+      remoteAudio = null;
+
+
+      if (dc) {
+        try {
+          dc.close();
+        } catch {}
+      }
+
+      dc = null;
+
+
+      if (pc) {
+        try {
+          pc.close();
+        } catch {}
+      }
+
+      pc = null;
+
+      hostOpeningRequested = false;
+
+
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      voiceSelect.disabled = false;
+      rendererSelect.disabled = false;
+      elevenVoiceSelect.disabled =
+        rendererSelect.value !== "elevenlabs";
+    }
+
+
+    // --------------------------------------------------------
+    // UI
+    // --------------------------------------------------------
+
+    rendererSelect.addEventListener("change", () => {
+      elevenVoiceSelect.disabled =
+        rendererSelect.value !== "elevenlabs";
+    });
+
+    startBtn.addEventListener(
+      "click",
+      startConversation
+    );
+
+    stopBtn.addEventListener(
+      "click",
+      endConversation
+    );
+
+  </script>
+
+</body>
+</html>

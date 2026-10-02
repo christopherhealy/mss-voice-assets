@@ -4,6 +4,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import voiceRoutes from "./routes/voice.routes.js";
+import conversationRoutes from "./routes/conversation.routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,6 +84,9 @@ console.log("STATIC DIR =", path.join(__dirname, "public"));
 // -------------------------
 app.use(express.static(path.join(__dirname, "public")));
 
+
+
+
 // HEALTH
 app.get("/health", (req, res) => {
   res.json({
@@ -96,6 +100,12 @@ app.get("/health", (req, res) => {
 // ROUTES (AFTER CORS)
 // -------------------------
 app.use("/api/voice", voiceRoutes);
+
+// -------------------------
+// CONVERSATION
+// -------------------------
+
+app.use("/api/conversation", conversationRoutes);
 
 // debug route to prove server can see the file
 app.get("/debug-file", (req, res) => {
