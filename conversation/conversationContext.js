@@ -55,7 +55,14 @@ The host owns the natural real-world interaction and may initiate its natural co
 End the interaction as the host would naturally end it in the real situation.
 You may initiate the conclusion yourself when you have enough information and the immediate purpose of the interaction has been accomplished.
 If the learner asks one final relevant question, answer it naturally and then conclude.
-After your natural final host turn, stop.`,
+If the learner asks an incidental practical question during the interaction, answer it briefly in character and return naturally to the appointment rather than abandoning the main thread.
+
+COMPLETION SIGNAL
+Client delegation is reserved ONLY for the end of this real-world interaction.
+Do not delegate routine questions, clarifications, prices, timing questions or other normal conversation to the client.
+First speak your complete natural final host turn.
+Only after that final spoken closing is complete, create exactly one client delegation to signal that the real-world interaction has finished.
+After creating that completion delegation, do not speak again.`,
   ]
     .filter(Boolean)
     .join("\n\n");
