@@ -66,6 +66,14 @@ const LIVE_VOICES = new Set([
 
 const DEFAULT_LIVE_VOICE = "marin";
 
+const LIVE_LANGUAGES = new Map([
+  ["en", "English"],
+  ["es", "Spanish"],
+  ["fr", "French"],
+  ["it", "Italian"],
+  ["ko", "Korean"],
+]);
+
 
 // ----------------------------------------------------------
 // T5 — read-only Experience context proof
@@ -160,12 +168,30 @@ router.post(
 
       const levelNo = Number(req.query.level || 1);
 
+      const conversationLanguage = String(req.query.language || "en")
+        .trim()
+        .toLowerCase();
+
+      if (!LIVE_LANGUAGES.has(conversationLanguage)) {
+        return res.status(400).json({
+          ok: false,
+          error: "unsupported_conversation_language",
+          language: conversationLanguage,
+        });
+      }
+
       const experienceContext = await loadExperienceContext({
         experienceKey,
         levelNo,
       });
 
-      const instructions = buildConversationContext(experienceContext);
+      const authoredInstructions = buildConversationContext(experienceContext);
+      const languageName = LIVE_LANGUAGES.get(conversationLanguage);
+
+      // Runtime state only. Behavioural language policy remains DB-authored.
+      const instructions =
+        `CURRENT CONVERSATIONAL LANGUAGE: ${languageName} (${conversationLanguage}).\n\n` +
+        authoredInstructions;
 
       console.log("CONVERSATION_CONTEXT_LOADED", {
         source: experienceContext.source,
@@ -174,6 +200,7 @@ router.post(
         levelNo: experienceContext.level.number,
         levelTitle: experienceContext.level.title,
         host: experienceContext.host.name,
+        conversationLanguage,
         objectiveCount: experienceContext.objectives.length,
       });
 
@@ -214,6 +241,7 @@ router.post(
         sessionId: live?.session?.id || null,
         model: "gpt-live-1",
         voice: requestedVoice,
+        conversationLanguage,
       });
 
       return res
