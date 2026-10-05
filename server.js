@@ -27,10 +27,14 @@ function isAllowedOrigin(origin = "") {
   "http://127.0.0.1:3000",
   "http://localhost:5173",
   "http://127.0.0.1:5173",
+  "http://localhost:8080",
 
   "https://www.ingless.io",
   "https://ingless.io",
   "https://api.ingless.io",
+
+  "https://fluently.click",
+  "https://www.fluently.click",
 
   "https://eslsuccess.club",
   "https://www.eslsuccess.club",
