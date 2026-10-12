@@ -12,6 +12,9 @@ export function buildConversationContext(ctx) {
         `${o.number}. ${o.title}`,
         o.hostObjective ? `Host objective: ${o.hostObjective}` : "",
         o.sceneContext ? `Scene context: ${o.sceneContext}` : "",
+        o.completionCriteria
+          ? `Completion conditions: ${o.completionCriteria}`
+          : "",
         o.aiInstructions ? `Behaviour: ${o.aiInstructions}` : "",
       ].filter(Boolean);
       return parts.join("\n");
