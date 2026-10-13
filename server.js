@@ -23,6 +23,14 @@ app.use(express.json());
 function isAllowedOrigin(origin = "") {
   if (!origin) return true;
 
+  // Permit only the explicitly configured Ingle QA origin.
+  // Never allow arbitrary *.onrender.com domains.
+  const qaOrigin = String(
+    process.env.INGLE_QA_ALLOWED_ORIGIN || ""
+  ).trim().replace(/\/$/, "");
+
+  if (qaOrigin && origin === qaOrigin) return true;
+
   const exactOrigins = new Set([
   "http://localhost:3010",
   "http://127.0.0.1:3010",
