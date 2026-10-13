@@ -5,6 +5,10 @@ import path from "path";
 import { fileURLToPath } from "url";
 import voiceRoutes from "./routes/voice.routes.js";
 import conversationRoutes from "./routes/conversation.routes.js";
+import {
+  startLiveRecoveryScheduler,
+} from "./conversation/ingleLiveRecoveryScheduler.js";
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -132,6 +136,91 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 3010;
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`✅ MSS Voice Personas running on http://localhost:${PORT}`);
+});
+
+const liveRecoveryScheduler = startLiveRecoveryScheduler();
+
+// ------------------------------------------------------------
+// Graceful shutdown
+//
+// Stop new HTTP connections and recovery scheduling.
+// Wait for in-flight HTTP requests and recovery work.
+//
+// A timeout prevents indefinite shutdown.
+// Durable recovery remains responsible for interrupted work.
+// ------------------------------------------------------------
+
+const SHUTDOWN_TIMEOUT_MS = 30_000;
+
+let shuttingDown = false;
+
+function closeHttpServer() {
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    });
+
+    // Close idle keep-alive connections without terminating
+    // requests that are actively being processed.
+    server.closeIdleConnections?.();
+  });
+}
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+
+  shuttingDown = true;
+
+  console.log("VOICE_ASSETS_SHUTDOWN_STARTED", { signal });
+
+  let timeoutHandle;
+
+  const deadline = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error("voice_assets_shutdown_timeout"));
+    }, SHUTDOWN_TIMEOUT_MS);
+  });
+
+  try {
+    // Begin HTTP shutdown and scheduler shutdown together.
+    // Both must complete before shutdown is successful.
+    await Promise.race([
+      Promise.all([
+        closeHttpServer(),
+        liveRecoveryScheduler.stop(),
+      ]),
+      deadline,
+    ]);
+
+    console.log("VOICE_ASSETS_SHUTDOWN_COMPLETE");
+
+    process.exitCode = 0;
+  } catch (error) {
+    console.error("VOICE_ASSETS_SHUTDOWN_ERROR", {
+      message: error?.message || String(error),
+    });
+
+    process.exitCode = 1;
+
+    // Only force-close HTTP connections after the deadline.
+    // The recovery journal protects unfinished recovery work
+    // when the process is subsequently terminated.
+    server.closeAllConnections?.();
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
 });
