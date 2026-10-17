@@ -53,9 +53,9 @@ test("GPT Live recovery: stale lease cannot overwrite successor", {
     const member = await pool.query(
       `INSERT INTO public.ingle_members
          (school_id, email, provider, status, handle_tag)
-       VALUES (9999, $1, 'email_otp', 'verified', 'ConcurrencyQA')
+       VALUES (9999, $1, 'email_otp', 'verified', $2)
        RETURNING id`,
-      [email]
+      [email, `ConcurrencyQA_${uid.replaceAll("-", "")}`]
     );
     fixture.memberId = member.rows[0].id;
 
