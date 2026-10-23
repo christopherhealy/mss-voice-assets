@@ -1,3 +1,4 @@
+import {qaDrain} from '../lib/qa-drain.js';
 import express from "express";
 import { pool } from "../lib/db.js";
 import { getOrCreateVoiceAsset } from "../lib/getOrCreateVoiceAsset.js";
@@ -403,6 +404,7 @@ async function pumpStreamJob(job) {
     setTimeout(() => {
       if (streamPersistJobs.get(job.jobKey) === job) {
         streamPersistJobs.delete(job.jobKey);
+        job.finishDrainTask?.();
       }
     }, 15000).unref?.();
   }
@@ -990,6 +992,7 @@ router.post("/stream-cache", express.json({ limit: "1mb" }), async (req, res) =>
       error: null,
     };
 
+    job.finishDrainTask=qaDrain.track('background');
     streamPersistJobs.set(jobKey, job);
 
     console.log("VOICE_STREAM_CREATE", {

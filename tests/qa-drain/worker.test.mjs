@@ -1,0 +1,12 @@
+import test,{mock} from 'node:test';import assert from 'node:assert/strict';
+import {createDrain} from '../../lib/qa-drain.js';
+let mode={version:1,instance:'synthetic-instance',service:'mss-voice-assets-qa',admissions:false,workersPaused:true,freeze:false,expiresAt:Date.now()+60000};
+const voiceEnv={RENDER_SERVICE_NAME:'mss-voice-assets-qa',INGLE_QA_DRAIN_ARMED:'true',INGLE_QA_DRAIN_BOOT_PHASE:'drain'};
+const drain=createDrain({instance:'synthetic-instance',env:voiceEnv,read:()=>mode});await drain.verify({query:async()=>({rows:[{name:'ingle_qa_db'}]})});
+await mock.module(new URL('../../lib/qa-drain.js',import.meta.url).href,{namedExports:{qaDrain:drain}});
+await mock.module(new URL('../../lib/db.js',import.meta.url).href,{namedExports:{pool:{query:()=>assert.fail('default pool forbidden')}}});
+const {runLiveRecoveryBatch}=await import('../../conversation/ingleLiveRecoveryWorker.js');
+let queries=0,releases=0;const db={query:async()=>assert.fail(),connect:async()=>({query:async()=>{queries++;return {rows:[]};},release:()=>releases++})};
+test('essential recovery keeps running during admission/nonessential pause',async()=>{const r=await runLiveRecoveryBatch({db});assert.equal(r.claimed,0);assert.equal(queries,3);assert.equal(releases,1);assert.equal(drain.status().counts.completion,0);});
+test('final freeze pauses recovery without querying or claiming; explicit resume works',async()=>{voiceEnv.INGLE_QA_DRAIN_BOOT_PHASE='freeze';mode={...mode,freeze:true};assert.deepEqual(await runLiveRecoveryBatch({db}),{paused:true});assert.equal(queries,3);mode={...mode,freeze:false};assert.equal((await runLiveRecoveryBatch({db})).claimed,0);assert.equal(queries,6);});
+test('Voice admission gate blocks direct background provider dispatch',async()=>{const f=drain.guardedFetch(()=>assert.fail('provider reached'));await assert.rejects(f('https://api.elevenlabs.io/v1/text-to-speech/x'),/qa_drain_unavailable/);});

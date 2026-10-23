@@ -1,3 +1,4 @@
+import {qaDrain} from './lib/qa-drain.js';
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -15,6 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.use(qaDrain.middleware);
 
 app.use(express.json());
 
@@ -144,6 +146,8 @@ app.get("/", (req, res) => {
   `);
 });
 
+const {pool: drainPool}=await import('./lib/db.js');
+await qaDrain.verify(drainPool);
 const PORT = process.env.PORT || 3010;
 
 const server = app.listen(PORT, () => {

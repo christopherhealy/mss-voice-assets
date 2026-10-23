@@ -1,3 +1,4 @@
+import {qaDrain} from '../lib/qa-drain.js';
 // ============================================================
 // conversation/ingleLiveRecoveryWorker.js
 //
@@ -303,7 +304,8 @@ async function processEvent(db, finalize, event) {
 // Tests may inject db and finalize.
 // ------------------------------------------------------------
 
-export async function runLiveRecoveryBatch({
+export async function runLiveRecoveryBatch(options={}) { return qaDrain.task('completion',()=>runRecoveryBatch(options)); }
+async function runRecoveryBatch({
   batchSize = BATCH_SIZE,
   db = pool,
   finalize = finalizeLiveSession,

@@ -1,3 +1,4 @@
+import {qaDrain} from '../lib/qa-drain.js';
 // ============================================================
 // conversation/liveSessionSupervisor.js
 //
@@ -159,6 +160,7 @@ export async function superviseLiveSession({
   let resolveInitialConnection;
   let rejectInitialConnection;
 
+  const finishDrainSupervisor=qaDrain.track('supervisors');
   const initialConnection = new Promise(
     (resolve, reject) => {
       resolveInitialConnection = resolve;
@@ -471,6 +473,7 @@ export async function superviseLiveSession({
         })
         .finally(() => {
           sideband.close();
+          finishDrainSupervisor();
         });
     }
   );
