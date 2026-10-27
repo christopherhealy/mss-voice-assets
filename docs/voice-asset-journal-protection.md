@@ -1,0 +1,13 @@
+# Ordinary-upsert journal protection
+
+Reserved root JSONB key: `_voice_studio_journal_v1` in `voice_assets.provider_response_json`. Future dedicated journal code may store an object with version 1 there. Any presence, including null, false or an unknown version, blocks ordinary writes. No journal writer or bypass parameter is implemented in this step. Marker presence is a record-protection convention, not authenticated application identity.
+
+`upsertVoiceAsset` uses one atomic INSERT SELECT / ON CONFLICT DO UPDATE statement. Its insert predicate rejects incoming metadata containing the reserved key. Its conflict predicate checks the EXISTING database row, never the incoming replacement, and rejects a protected target. PostgreSQL evaluates the conflict predicate while holding the conflicting-row lock. No preflight SELECT creates a race. A zero-row RETURNING result throws `VoiceAssetJournalConflictError`, code `VOICE_ASSET_JOURNAL_CONFLICT`, status 409, fixed message `voice_asset_journal_conflict`, with no row identifiers, URLs or metadata.
+
+Unprotected inserts/updates retain existing field mappings and replacement behavior. The optional second argument `{db}` is trusted dependency injection for isolated tests, never an HTTP request parameter. There is no allowProtected option. SQL parameters remain bound.
+
+Existing callers: getOrCreateVoiceAsset propagates the error. Generic /render catches it using its existing HTTP 500 render_failed contract with the fixed message; the Fluently adapter returns its existing HTTP 502 hear_render_unconfirmed; the disabled Studio adapter records its existing failure state. Stream persistence catches/logs a fixed conflict message; audio may already have been sent, so it cannot retrospectively change the HTTP response. No callers are changed by this patch.
+
+Boundary: this protects database records through the ordinary helper, not arbitrary SQL by the database owner, reads through other routes, provider spending, or object-store writes that occur before the upsert. Future journal integration must use a separate reviewed writer and private storage namespace, and prevent dispatch/storage work on protected identities before ordinary processing. No protected rows are created here. No journal transitions or migrations are implemented.
+
+Validation is offline: mocked atomic statement outcomes plus actual route error handlers. Concurrent mocks do not verify PostgreSQL lock behavior. An isolated PostgreSQL integration check remains outstanding; no QA writes are authorized. Existing Ingle/Fluently tests run without network or database connections.

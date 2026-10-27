@@ -5,6 +5,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import {createFluentlyAudioHandler} from "./routes/fluently-audio.js";
+import {createVoiceStudioAudioHandler} from "./routes/voice-studio-audio.js";
 import voiceRoutes from "./routes/voice.routes.js";
 import conversationRoutes from "./routes/conversation.routes.js";
 import {
@@ -119,6 +120,7 @@ app.get("/health", (req, res) => {
 // ROUTES (AFTER CORS)
 // -------------------------
 app.all("/api/voice/fluently-render", createFluentlyAudioHandler());
+app.all("/api/voice/studio-audio", createVoiceStudioAudioHandler());
 app.use("/api/voice", voiceRoutes);
 
 // -------------------------

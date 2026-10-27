@@ -1,0 +1,35 @@
+# Voice Studio private audio prototype — disabled
+
+`POST /api/voice/studio-audio` is registered with no enablement, approved profile, credentials, provider implementation, storage or database dependencies. It cannot generate audio. No environment flag enables it. The HeyGen request/download adapter has no configured live transport or credentials. Production service names are rejected.
+
+Future trusted server requests require `X-Service-ID: voice-studio` and `Authorization: Bearer <distinct service secret>` sourced from `VOICE_STUDIO_AUDIO_SERVICE_SECRET`, never the Ingle service secret. The body contains application `voice-studio`, actor `julie`, activity `l2-scripted-host`, language `it`, profile_version, approval_id and exact synthetic text `Ciao! Sono Julie. Benvenuto a Firenze! Preferisci soggiornare in centro oppure in campagna?`. Arbitrary learner text is rejected in this prototype.
+
+The server-owned approved profile must specify verified HeyGen voice ID, engine, model, settings and version. Tiziana is only a candidate; the repository installs no approved mapping. Test IDs are synthetic. No fallback is supported.
+
+Server-owned approval binds the complete cache key, application, expiration, cost upper bound and ceiling in integer micro-USD. Client approval flags confer no authority. A real generator must establish a defensible upper bound before dispatch and honor the supplied ceiling; post-hoc accounting cannot prevent an unexpected provider charge. Unknown pricing blocks live approval.
+
+Response: opaque asset_id, authenticated retrieval_path, cache_hit, accounting {costStatus: actual|estimated|unknown, actualMicrousd, estimatedMicrousd, providerRequestId, usage}. Customer prices are deliberately absent. GET on the same route with asset_id requires the same service identity and a ready application-scoped journal entry. Private storage returns bytes, never public URLs. Do not expose the service secret to a browser; Voice Studio must authenticate its users and proxy authorized bytes.
+
+The existing getOrCreateVoiceAsset pipeline accepts optional injected IO and exact-text handling; all legacy defaults remain unchanged. Private calls inject every database operation and private storage, and persist only an opaque internal asset reference. Cache identity covers application, actor, activity, Italian language, exact text hash, provider, voice, engine/model, profile version and settings. Settings serialization is insertion-order-sensitive (safe cache misses). Configuration must be immutable for a handler lifetime.
+
+The injected journal must implement durable atomic claim(key, record), get(key), finish(key, record). Claim persists before provider dispatch; concurrent processes must not both claim. Process-local promises coalesce same-handler requests; other instances fail closed on existing dispatch markers. A crash, failed upload or failed journal completion leaves dispatching/uncertain, never an automatic retry. No lease expiry unlocks a paid dispatch. Reconciliation requires separate operator review. Storage preflight failure occurs before claim and dispatch. HeadBucket alone is not a sufficient live write guarantee.
+
+Only mocked IO is wired for testing. Before live use: independently approve Tiziana compatibility and pricing, wire the dedicated durable journal and reviewed QA database connection checks, private storage/access lifecycle, provider response/usage validation, bounded audio payloads, application budgets/rate limits, explicit generation grants, and tested reconciliation. The default endpoint remains unavailable until separately reviewed wiring is implemented. No migrations or live services are changed.
+
+Offline tests exercise real shared orchestration with synthetic generation, storage and database functions. Existing Fluently source is unchanged. No browser playback, actual HeyGen compatibility, storage ACL or runtime readiness is established.
+
+## Step 259 — single-line HeyGen adapter and recovery
+
+`createHeygenSpeech` in `lib/generateSpeech.heygen.js` accepts an injected transport and credential callback; neither is configured in server startup. The fixed routing is private Tiziana `ebbc053d046742c582f273f1334c58d8`, engine `elevenlabs`, requested model `eleven_multilingual_v2`, Italian, speed 1, exact synthetic Host text above. Engine availability was reported verified by the operator; this does not install platform approval or verify pricing. No transcript is changed.
+
+The adapter performs a single manual-redirect POST, then awaits `persistRecovery` before any download. Recovery metadata contains a signed URL, request ID, text hash, voice, requested model, returned engine, duration and generation time. Treat it as secret-bearing data: durable protected journal only, no logs, client responses, public asset metadata or Git. The URL is never placed in the ordinary provider-response JSON.
+
+Implement journal `saveRecovery(key, metadata)` as a durable protected write. Implement `claimRecovery(key)` as atomic compare-and-set from recoverable to recovering, preserving the recovery metadata. Interrupted dispatch/recovery states stay blocked until separately reconciled; never expire them into a new paid dispatch. A failed recovery-save leaves the original dispatch marker blocked.
+
+An authorized `POST` with `operation: recover` uses a separate server-owned `recoveryApprovals` entry bound to the same cache key and expiry. It can invoke only `generate.recover`, which has no POST path. Normal requests cannot automatically resume failed downloads. Download/storage failures with retained metadata become recoverable; failures without metadata remain uncertain. Same-handler coalescing and cross-instance atomic claims apply.
+
+Downloads never carry API credentials. Each HTTPS redirect is revalidated against exact operator-owned host allowlists, up to three redirects, with no userinfo/nonstandard port or private IPv4 DNS results. IPv6 is conservatively rejected. The default allows only files.heygen.ai; actual delivery/CDN hostnames require review, not automatic trust. The injected transport must itself disable retries/redirects and use normal TLS certificate/hostname verification. DNS validation is a precheck; a live transport must pin the validated address or provide equivalent DNS-rebinding protection. MP3 MIME/signature and a 20 MiB bound are enforced.
+
+Before live enabling: reviewed durable-journal/key custody and private storage/database wiring and identity checks, TLS/validated DNS transport, explicit profile approval and spending approval with a defensible cost bound, and provider credential custody remain prerequisites. Actual cost is unknown unless explicitly reported; the observed audition balance change is not assigned as a per-request cost or rate. No existing audition asset is assumed recoverable. Actor’s Studio remains unchanged.
+
+The dedicated implementation and transition/operational restrictions are documented in [voice-studio-durable-journal.md](voice-studio-durable-journal.md). It is not enabled or installed in server startup.
