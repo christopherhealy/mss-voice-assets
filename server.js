@@ -6,6 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import {createFluentlyAudioHandler} from "./routes/fluently-audio.js";
 import {createVoiceStudioAudioHandler} from "./routes/voice-studio-audio.js";
+import {createVoiceStudioAccountingClient} from "./lib/voice-studio-accounting-client.js";
 import voiceRoutes from "./routes/voice.routes.js";
 import conversationRoutes from "./routes/conversation.routes.js";
 import {
@@ -120,7 +121,11 @@ app.get("/health", (req, res) => {
 // ROUTES (AFTER CORS)
 // -------------------------
 app.all("/api/voice/fluently-render", createFluentlyAudioHandler());
-app.all("/api/voice/studio-audio", createVoiceStudioAudioHandler());
+const voiceStudioAccounting = process.env.NODE_ENV === 'development' && !process.env.RENDER_SERVICE_NAME &&
+  process.env.VOICE_STUDIO_ACCOUNTING_CALLBACK_URL
+  ? createVoiceStudioAccountingClient()
+  : null;
+app.all("/api/voice/studio-audio", createVoiceStudioAudioHandler({accounting:voiceStudioAccounting}));
 app.use("/api/voice", voiceRoutes);
 
 // -------------------------

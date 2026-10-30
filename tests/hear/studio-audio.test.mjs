@@ -7,17 +7,20 @@ const body={application:'voice-studio',actor:'julie',activity:'l2-scripted-host'
 const req=(b=body)=>({method:'POST',headers:{authorization:`Bearer ${env.VOICE_STUDIO_AUDIO_SERVICE_SECRET}`,'x-service-id':'voice-studio'},body:b});
 const res=()=>({headers:{},setHeader(k,v){this.headers[k]=v;},status(n){this.code=n;return this;},json(data){this.data=data;return this;},send(data){this.data=data;return this;}});
 function setup(options={}){
- const records=new Map(),objects=new Map();let calls=0,claimCalls=0;
+ const records=new Map(),objects=new Map(),accountingEvents=[];let calls=0,claimCalls=0,accountingClaims=0,accountingOutcomes=0;
  const key=cacheIdentity(SYNTHETIC_TEXT,profile);
- const journal={get:async k=>records.get(k),claim:async(k,v)=>{claimCalls++;if(records.has(k))return false;records.set(k,v);return true;},finish:async(k,v)=>{records.set(k,v);}};
+ const journal={get:async k=>records.get(k),claim:async(k,v)=>{claimCalls++;if(records.has(k))return false;records.set(k,{...v,status:'pending',accountingDelivery:{claim:'pending',outcome:'not_due'}});return true;},
+  accountingDelivery:async(k,phase,status,metadata)=>{const old=records.get(k);records.set(k,{...old,accountingDelivery:{...old.accountingDelivery,[phase]:status,...(phase==='outcome'&&status==='pending'?{pendingOutcome:metadata}:{}),...(phase==='outcome'&&status==='confirmed'?{pendingOutcome:null}:{})}});},
+  markDispatching:async k=>{records.set(k,{...records.get(k),status:'dispatching'});},finish:async(k,v)=>{records.set(k,{...records.get(k),...v});}};
  const storage={preflight:async()=>{},write:async(k,b)=>{objects.set(k,b);},read:async k=>objects.get(k)};
  const pipeline={getOrCreateTextItem:async()=>({id:1}),findExistingAsset:async()=>null,upsertVoiceAsset:async data=>({id:1,...data})};
  // Exercise the real shared pipeline with mocked IO. Dynamic import does not connect to anything.
  const render=async args=>(await import('../../lib/getOrCreateVoiceAsset.js')).getOrCreateVoiceAsset(args);
  const generate=async args=>{calls++;assert.equal(args.text,SYNTHETIC_TEXT);assert.equal(args.profile.language,'it');return {buffer:Buffer.from('synthetic mp3'),actualCostMicrousd:20,providerRequestId:'mock-request',usage:{characters:46}};};
  const approvals=new Map([['test-grant',{key,application:'voice-studio',expiresAt:Date.now()+60000,ceilingMicrousd:100,upperBoundMicrousd:80}]]);
- const config={env,enabled:true,profile,approvals,journal,storage,pipeline,generate,render,...options};
- return {handler:createVoiceStudioAudioHandler(config),config,key,records,objects,calls:()=>calls,claims:()=>claimCalls};
+ const accounting={claim:async event=>{accountingClaims++;accountingEvents.push({phase:'claim',event});return {recorded:true};},outcome:async event=>{accountingOutcomes++;accountingEvents.push({phase:'outcome',event});return {recorded:true};}};
+ const config={env,enabled:true,profile,approvals,journal,storage,pipeline,generate,render,accounting,...options};
+ return {handler:createVoiceStudioAudioHandler(config),config,key,records,objects,accountingEvents,calls:()=>calls,claims:()=>claimCalls,accountingClaims:()=>accountingClaims,accountingOutcomes:()=>accountingOutcomes};
 }
 async function invoke(f,request=req()){const r=res();await f.handler(request,r);return r;}
 test('distinct service identity rejects absent, wrong, and Ingle identities',async()=>{
@@ -48,36 +51,52 @@ test('cache identity changes with provider configuration and exact text',()=>{
 test('shared pipeline caches sequential and simultaneous requests with private retrieval',async()=>{
  const f=setup();const results=await Promise.all(Array.from({length:6},()=>invoke(f)));
  assert.equal(f.calls(),1);assert.equal(f.claims(),1);assert.ok(results.every(r=>r.data.ok));
+ assert.equal(f.accountingClaims(),1);assert.equal(f.accountingOutcomes(),1);
+ assert.equal(f.accountingEvents[0].event.generation_key,f.key);assert.equal(f.accountingEvents[1].event.dispatch_status,'completed');
+ assert.equal(f.accountingEvents[1].event.output_audio_bytes,13);
  assert.equal((await invoke(f)).data.cache_hit,true);assert.equal(f.calls(),1);
  const get={...req(),method:'GET',query:{asset_id:results[0].data.asset_id}};
  assert.equal((await invoke(f,get)).data.toString(),'synthetic mp3');
  assert.equal((await invoke(f,{...get,headers:{...get.headers,'x-service-id':'other'}})).code,401);
  assert.equal((await invoke(f,{...get,query:{asset_id:'studio:'+ '0'.repeat(64)}})).code,404);
  assert.equal(JSON.stringify(results).includes('https://'),false);
- assert.equal(results[0].data.accounting.costStatus,'actual');
+ assert.equal(results[0].data.accounting.costStatus,'UNRATED');
+ assert.equal(results[0].data.accounting.estimatedMicrousd,null);
  assert.equal(results[0].data.accounting.providerRequestId,'mock-request');
 });
 test('storage preflight failure performs no dispatch or claim',async()=>{
  const f=setup({storage:{preflight:async()=>{throw Error('private detail');}}});
  assert.equal((await invoke(f)).code,503);assert.equal(f.calls(),0);assert.equal(f.claims(),0);
 });
+test('ledger claim must be confirmed before dispatch and can be retried without losing the pending journal state',async()=>{
+ let allowed=false;const f=setup({accounting:{claim:async()=>allowed?{recorded:true}:Promise.reject(Error('private database failure')),outcome:async()=>({recorded:true})}});
+ assert.equal((await invoke(f)).code,503);assert.equal(f.calls(),0);assert.equal(f.records.get(f.key).status,'pending');
+ allowed=true;const result=await invoke(f);assert.equal(result.data.ok,true);assert.equal(f.calls(),1);assert.equal(f.records.get(f.key).status,'ready');
+});
+test('failed accounting outcome can be redelivered without another generation request',async()=>{
+ let allowOutcome=false;const f=setup({accounting:{claim:async()=>({recorded:true}),outcome:async()=>{if(!allowOutcome)throw Error('private callback failure');return {recorded:true};}}});
+ assert.equal((await invoke(f)).code,503);assert.equal(f.calls(),1);
+ assert.equal(f.records.get(f.key).accountingDelivery.outcome,'pending');
+ allowOutcome=true;const retry=await invoke(f,req({...body,operation:'accounting-retry'}));
+ assert.equal(retry.data.accounting_retry,true);assert.equal(f.calls(),1);assert.equal(f.records.get(f.key).accountingDelivery.outcome,'confirmed');
+});
 test('post-generation failure records uncertain accounting and prevents retry including new handler',async()=>{
  const f=setup();f.config.storage.write=async()=>{throw Error('secret storage error');};
  const result=await invoke(f);assert.equal(result.code,503);assert.equal(f.calls(),1);
- assert.equal(f.records.get(f.key).status,'uncertain');assert.equal(f.records.get(f.key).accounting.actualMicrousd,20);
+ assert.equal(f.records.get(f.key).status,'uncertain');assert.equal(f.records.get(f.key).accounting.costStatus,'UNRATED');
  assert.equal((await invoke(f)).code,409);
  f.handler=createVoiceStudioAudioHandler(f.config);assert.equal((await invoke(f)).code,409);assert.equal(f.calls(),1);
  assert.doesNotMatch(JSON.stringify(result),/secret storage error/);
 });
 test('unknown dispatch outcomes retain unknown cost and block retry',async()=>{
  const f=setup({generate:async()=>{throw Error('provider secret');}});
- assert.equal((await invoke(f)).code,503);assert.equal(f.records.get(f.key).accounting.costStatus,'unknown');
+ assert.equal((await invoke(f)).code,503);assert.equal(f.records.get(f.key).accounting.costStatus,'UNRATED');
  assert.equal((await invoke(f)).code,409);
 });
-test('estimated and unknown provider costs remain distinct',async()=>{
- for(const [metadata,status] of [[{estimatedCostMicrousd:25},'estimated'],[{},'unknown']]){
+test('HeyGen events remain unrated even if a provider adapter exposes speculative pricing fields',async()=>{
+ for(const metadata of [{estimatedCostMicrousd:25},{actualCostMicrousd:20},{}]){
  const f=setup({generate:async()=>({buffer:Buffer.from('mock'),...metadata})});
- assert.equal((await invoke(f)).data.accounting.costStatus,status);}
+  const result=await invoke(f);assert.equal(result.data.accounting.costStatus,'UNRATED');assert.equal(result.data.accounting.actualMicrousd,null);assert.equal(result.data.accounting.estimatedMicrousd,null);}
 });
 test('preexisting in-flight durable marker is never redispatched',async()=>{
  const f=setup();f.records.set(f.key,{application:'voice-studio',status:'dispatching'});
@@ -103,6 +122,6 @@ test('database asset-write failure after generation is uncertain, never zero-cos
  const f=setup();f.config.pipeline.upsertVoiceAsset=async()=>{throw Error('database detail');};
  assert.equal((await invoke(f)).code,503);
  assert.equal(f.records.get(f.key).status,'uncertain');
- assert.equal(f.records.get(f.key).accounting.actualMicrousd,20);
+ assert.equal(f.records.get(f.key).accounting.costStatus,'UNRATED');
  assert.equal((await invoke(f)).code,409);assert.equal(f.calls(),1);
 });

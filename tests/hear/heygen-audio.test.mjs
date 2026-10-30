@@ -12,8 +12,9 @@ function setup({post=reply,download=audio,persist=async()=>{},resolve=async()=>[
  let posts=0,gets=0,saved=null;const calls=[];
  const generate=createHeygenSpeech({credential:async()=>'synthetic-api-key',resolve,
   request:async(url,options)=>{calls.push({url,options});if(options.method==='POST'){posts++;return post();}gets++;return download(url,options);}});
- return {generate,calls,posts:()=>posts,gets:()=>gets,saved:()=>saved,
-  run:()=>generate({text:HOST_TEXT,profile,persistRecovery:async record=>{await persist(record);saved=record;}})};
+ const outcomes=[];
+ return {generate,calls,posts:()=>posts,gets:()=>gets,saved:()=>saved,outcomes,
+  run:()=>generate({text:HOST_TEXT,profile,persistRecovery:async record=>{await persist(record);saved=record;},reportOutcome:async e=>{outcomes.push(e);}})};
 }
 test('HeyGen response persisted before download and adapted to shared buffer contract',async()=>{
  const f=setup({download:()=>{assert.ok(f.saved());return audio();}});const out=await f.run();
@@ -22,6 +23,7 @@ test('HeyGen response persisted before download and adapted to shared buffer con
  const body=JSON.parse(f.calls[0].options.body);assert.equal(body.text,HOST_TEXT);assert.equal(body.voice_id,TIZIANA_ID);
  assert.equal(body.settings.model_id,'eleven_multilingual_v2');assert.equal(body.language,'it');assert.equal(body.force_regenerate,false);
  assert.equal(out.actualCostMicrousd,undefined);assert.equal(f.posts(),1);
+ assert.deepEqual(f.outcomes,[{dispatch_status:'completed',provider_request_id:'request-test',duration_seconds:5.4596,engine:'elevenlabs',output_audio_bytes:null}]);
  assert.equal(f.calls[0].options.redirect,'manual');assert.equal(f.calls[1].options.headers['X-Api-Key'],undefined);
  assert.doesNotMatch(JSON.stringify(out),/signature=|synthetic-api-key/);
 });
@@ -30,8 +32,8 @@ test('dynamic prepared text is accepted only through an explicit server-owned le
  const request=async(_url,options)=>{if(options.method==='POST'){posts++;requestBody=JSON.parse(options.body);return reply();}return audio();};
  const generate=createHeygenSpeech({credential:async()=>'mock-key',resolve:async()=>[{address:'8.8.8.8'}],request,
   validateText:(candidate,p)=>p===learner&&p.activity==='l2-scripted-learner'&&typeof candidate==='string'&&candidate.trim().length>0&&candidate.length<=8000});
- const result=await generate({text,profile:learner,persistRecovery:async()=>{}});assert.equal(result.buffer.toString(),mp3.toString());assert.equal(requestBody.text,text);assert.equal(requestBody.voice_id,TIZIANA_ID);assert.equal(requestBody.engine,'elevenlabs');assert.equal(requestBody.settings.model_id,'eleven_multilingual_v2');assert.equal(posts,1);
- const fixedOnly=createHeygenSpeech({credential:async()=>'mock-key',request,resolve:async()=>[{address:'8.8.8.8'}]});await assert.rejects(fixedOnly({text,profile:learner,persistRecovery:async()=>{}}),{message:'heygen_audio_unavailable_no_regeneration'});assert.equal(posts,1);
+ const result=await generate({text,profile:learner,persistRecovery:async()=>{},reportOutcome:async()=>{}});assert.equal(result.buffer.toString(),mp3.toString());assert.equal(requestBody.text,text);assert.equal(requestBody.voice_id,TIZIANA_ID);assert.equal(requestBody.engine,'elevenlabs');assert.equal(requestBody.settings.model_id,'eleven_multilingual_v2');assert.equal(posts,1);
+ const fixedOnly=createHeygenSpeech({credential:async()=>'mock-key',request,resolve:async()=>[{address:'8.8.8.8'}]});await assert.rejects(fixedOnly({text,profile:learner,persistRecovery:async()=>{},reportOutcome:async()=>{}}),{message:'heygen_audio_unavailable_no_regeneration'});assert.equal(posts,1);
 });
 test('download failure preserves URL and allows download-only recovery',async()=>{
  let fail=true;const f=setup({download:()=>{if(fail)throw Error('signed secret failure');return audio();}});
@@ -45,10 +47,18 @@ test('recovery persistence failure prevents audio download and never retries POS
 test('ambiguous provider dispatch is never retried and errors are redacted',async()=>{
  const f=setup({post:()=>{throw Error('synthetic-api-key raw error');}});
  await assert.rejects(f.run(),{message:'heygen_audio_unavailable_no_regeneration'});assert.equal(f.posts(),1);assert.equal(f.gets(),0);
+ assert.deepEqual(f.outcomes,[{dispatch_status:'dispatch_outcome_uncertain'}]);
 });
 test('generation redirects are not followed',async()=>{
  const f=setup({post:()=>new Response(null,{status:302,headers:{location:'https://other.example'}})});
  await assert.rejects(f.run());assert.equal(f.posts(),1);assert.equal(f.gets(),0);
+ assert.deepEqual(f.outcomes,[{dispatch_status:'provider_http_failure',http_status:302}]);
+});
+test('malformed successful provider response is recorded as uncertain without exposing response content',async()=>{
+ const f=setup({post:()=>new Response('sensitive signed response',{status:200})});
+ await assert.rejects(f.run(),{message:'heygen_audio_unavailable_no_regeneration'});assert.equal(f.posts(),1);assert.equal(f.gets(),0);
+ assert.deepEqual(f.outcomes,[{dispatch_status:'provider_response_uncertain'}]);
+ assert.doesNotMatch(JSON.stringify(f.outcomes),/sensitive|signed|https:/);
 });
 test('legitimate HTTPS audio redirects carry no API credential',async()=>{
  let count=0;const f=setup({download:(url,options)=>{
@@ -62,7 +72,7 @@ test('cross-host redirects require an exact server-owned allowlist',async()=>{
  calls.push(opts);if(opts.method==='POST')return reply();
  if(calls.length===2)return new Response(null,{status:302,headers:{location:'https://cdn.example.test/audio.mp3'}});
  assert.equal(opts.headers['X-Api-Key'],undefined);return audio();}});
- await generate({text:HOST_TEXT,profile,persistRecovery:async()=>{}});assert.equal(calls.length,3);
+ await generate({text:HOST_TEXT,profile,persistRecovery:async()=>{},reportOutcome:async()=>{}});assert.equal(calls.length,3);
 });
 test('HTTP, userinfo and unapproved redirect destinations are rejected',async()=>{
  for(const location of ['http://files.heygen.ai/x','https://evil.example/x','https://user:pass@files.heygen.ai/x']){
@@ -90,12 +100,14 @@ const request=(operation)=>({method:'POST',headers:{'x-service-id':'voice-studio
 const response=()=>({setHeader(){},status(code){this.code=code;return this;},json(value){this.value=value;return this;}});
 function routeFixture({downloadFailure=false,storageFailure=false}={}){
  let failDownload=downloadFailure,failStorage=storageFailure;const records=new Map(),objects=new Map(),f=setup({download:()=>{if(failDownload)throw Error('download failed');return audio();}});
- const journal={get:async key=>records.get(key),claim:async(key,record)=>{if(records.has(key))return false;records.set(key,record);return true;},
+ const journal={get:async key=>records.get(key),claim:async(key,record)=>{if(records.has(key))return false;records.set(key,{...record,status:'pending',accountingDelivery:{claim:'pending',outcome:'not_due'}});return true;},
+ accountingDelivery:async(key,phase,status,metadata)=>{const old=records.get(key);records.set(key,{...old,accountingDelivery:{...old.accountingDelivery,[phase]:status,...(phase==='outcome'&&status==='pending'?{pendingOutcome:metadata}:{}),...(phase==='outcome'&&status==='confirmed'?{pendingOutcome:null}:{})}});},
+ markDispatching:async key=>{records.set(key,{...records.get(key),status:'dispatching'});},
  saveRecovery:async(key,recovery)=>{records.set(key,{...records.get(key),recovery});},
  claimRecovery:async key=>{const old=records.get(key);if(old?.status!=='recoverable')return false;records.set(key,{...old,status:'recovering'});return true;},
  finish:async(key,record)=>{records.set(key,record);}};
  const key=cacheIdentity(HOST_TEXT,profile),approval={application:'voice-studio',key,expiresAt:Date.now()+60000,upperBoundMicrousd:100,ceilingMicrousd:100};
- const config={env,enabled:true,profile,journal,generate:f.generate,
+ const config={env,enabled:true,profile,journal,generate:f.generate,accounting:{claim:async()=>({recorded:true}),outcome:async()=>({recorded:true})},
  approvals:new Map([['generation-grant',approval]]),recoveryApprovals:new Map([['recovery-grant',approval]]),
  storage:{preflight:async()=>{},write:async(k,b)=>{if(failStorage)throw Error('storage failed');objects.set(k,b);}},
  pipeline:{getOrCreateTextItem:async()=>({id:1}),findExistingAsset:async()=>null,upsertVoiceAsset:async a=>a}};
@@ -114,7 +126,7 @@ for(const kind of ['downloadFailure','storageFailure'])test(`explicit route reco
  assert.equal(f.records.get(f.key).status,'recoverable');assert.ok(f.records.get(f.key).recovery.audioUrl);
  assert.equal((await f.invoke()).code,409);assert.equal(f.f.posts(),1);
  f.reset();const result=await f.invoke('recover');assert.equal(result.value.ok,true);assert.equal(f.f.posts(),1);
- assert.equal(result.value.accounting.providerRequestId,'request-test');assert.equal(result.value.accounting.costStatus,'unknown');
+ assert.equal(result.value.accounting.providerRequestId,'request-test');assert.equal(result.value.accounting.costStatus,'UNRATED');
  assert.equal(f.objects.size,1);assert.equal(f.records.get(f.key).status,'ready');
 });
 test('recovery requires a separate server-side grant, never falls back to paid generation',async()=>{

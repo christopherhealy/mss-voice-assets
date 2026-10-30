@@ -13,7 +13,7 @@ const mp3=Buffer.from('ID3 synthetic audio');
 import {database} from './fixtures/studio-journal-db.mjs';
 
 const make=db=>createVoiceStudioJournal({db,encryptionKey,keyId:'synthetic-test-key-v1',profile});
-const claim=j=>j.claim(key,{application:'voice-studio',status:'dispatching'});
+const claim=async j=>{const got=await j.claim(key,{application:'voice-studio',status:'pending'});if(got){await j.accountingDelivery(key,'claim','confirmed');await j.markDispatching(key);}return got;};
 const ready=async j=>{await claim(j);await j.saveRecovery(key,recovery);await j.markDownloaded(key,mp3);await j.markStored(key);await j.pipeline.upsertVoiceAsset({textItemId:11,voiceProfileId:17,textHash,storageKey:assetId,audioUrl:assetId,mimeType:'audio/mpeg',durationMs:5460});await j.finish(key,{application:'voice-studio',status:'ready'});};
 test('atomic concurrent claims use existing uniqueness; only one may dispatch',async()=>{
  const {db,state}=database();const jobs=[make(db),make(db),make(db)];
@@ -36,6 +36,17 @@ test('URL and request identifiers are encrypted with fresh IVs and versioned met
  assert.doesNotMatch(JSON.stringify(state.queries),/signature=|synthetic-provider-request/);
  const envelope=state.asset.provider_response_json[marker];assert.equal(envelope.version,1);assert.notEqual(envelope.iv,first);
  assert.equal((await make(db).get(key)).recovery.requestId,recovery.requestId);
+});
+test('accounting claim and pending outcome delivery are durably recoverable but encrypted',async()=>{
+ const {db,state}=database(),j=make(db);assert.equal(await j.claim(key,{application:'voice-studio',status:'pending'}),true);
+ await j.accountingDelivery(key,'claim','confirmed');
+ const outcome={dispatch_status:'completed',provider_request_id:'private-request-id',duration_seconds:5.46,engine:'elevenlabs',output_audio_bytes:1234};
+ await j.accountingDelivery(key,'outcome','pending',outcome);
+ const resumed=make(db),record=await resumed.get(key);assert.equal(record.accountingDelivery.claim,'confirmed');
+ assert.deepEqual(record.accountingDelivery.pendingOutcome,outcome);
+ assert.doesNotMatch(JSON.stringify(state.asset.provider_response_json),/private-request-id|elevenlabs|dispatch_status/);
+ await resumed.accountingDelivery(key,'outcome','confirmed');
+ assert.equal((await make(db).get(key)).accountingDelivery.pendingOutcome,null);
 });
 test('wrong keys, key versions, modified ciphertext and copied-context envelopes fail closed',async()=>{
  for(const change of ['key','version','ciphertext','context']){
@@ -78,6 +89,7 @@ test('invalid transitions and wrong QA identity/profile fail before asset mutati
 });
 const env={RENDER_SERVICE_NAME:'mss-voice-assets-qa',VOICE_STUDIO_AUDIO_SERVICE_SECRET:'synthetic-distinct-only-secret-not-real'};
 function route(journal,generate,storage){return createVoiceStudioAudioHandler({env,enabled:true,profile,journal,pipeline:journal.pipeline,generate,storage,
+ accounting:{claim:async()=>({recorded:true}),outcome:async()=>({recorded:true})},
  approvals:new Map([['generate',{key,application:'voice-studio',expiresAt:Date.now()+60000,ceilingMicrousd:100,upperBoundMicrousd:100}]]),
  recoveryApprovals:new Map([['recover',{key,application:'voice-studio',expiresAt:Date.now()+60000}]])});}
 async function invoke(handler,operation='generate'){
@@ -92,7 +104,13 @@ for(const failure of ['download','storage'])test(`route ${failure} failure recov
  if(options.method==='POST'){posts++;return new Response(JSON.stringify({data:{audio_url:recovery.audioUrl,request_id:recovery.requestId,duration:5.46,engine:'elevenlabs'}}));}
  if(fail&&failure==='download')throw Error('simulated');return new Response(mp3,{headers:{'content-type':'audio/mpeg'}});}});
  const storage={preflight:async()=>{},write:async(k,b)=>{if(fail&&failure==='storage')throw Error('simulated');objects.set(k,b);},read:async k=>objects.get(k)};
- const original=route(make(db),generate,storage);assert.equal((await invoke(original)).code,503);assert.equal((await make(db).get(key)).status,'recoverable');
+ const reporting=async()=>({recorded:true});
+ const initialJournal=make(db);
+ const original=createVoiceStudioAudioHandler({env,enabled:true,profile,journal:initialJournal,pipeline:initialJournal.pipeline,generate,storage,
+   accounting:{claim:async()=>({recorded:true}),outcome:reporting},
+   approvals:new Map([['generate',{key,application:'voice-studio',expiresAt:Date.now()+60000,ceilingMicrousd:100,upperBoundMicrousd:100}]]),
+   recoveryApprovals:new Map([['recover',{key,application:'voice-studio',expiresAt:Date.now()+60000}]])});
+ assert.equal((await invoke(original)).code,503);assert.equal((await make(db).get(key)).status,'recoverable');
  assert.equal((await invoke(original)).code,409);fail=false;
  const restarted=route(make(db),generate,storage);assert.equal((await invoke(restarted,'recover')).value.ok,true);
  for(let i=0;i<3;i++)assert.equal((await invoke(restarted,'play')).value.toString(),mp3.toString());

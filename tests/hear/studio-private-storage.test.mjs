@@ -65,6 +65,7 @@ function integration(){
  if(downloadFails)throw Error('download failed');return new ResponseGlobal(mp3,{headers:{'content-type':'audio/mpeg'}});}});
  const make=(playbackOnly=false)=>{const journal=createVoiceStudioJournal({db,encryptionKey:Buffer.alloc(32,7),keyId:'synthetic-journal-key',profile});
  return createVoiceStudioAudioHandler({env,enabled:true,profile,journal,storage:storageFor(o),
+ accounting:{claim:async()=>({recorded:true}),outcome:async()=>({recorded:true})},
  ...(playbackOnly?{}:{generate,pipeline:journal.pipeline}),
  approvals:new Map([['generate',{key,application:'voice-studio',expiresAt:Date.now()+60000,ceilingMicrousd:100,upperBoundMicrousd:100}]]),
  recoveryApprovals:new Map([['recover',{key,application:'voice-studio',expiresAt:Date.now()+60000}]])});};

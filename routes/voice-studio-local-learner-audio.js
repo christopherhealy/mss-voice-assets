@@ -83,7 +83,7 @@ export function createVoiceStudioLocalLearnerAudioHandler({env=process.env,enabl
     if(typeof signingSecret!=='string'||signingSecret.length<32)return sendError(503,'local_attestation_unavailable');
     let signed,providerCredential=null;
     try{
-      const body=req.body;if(!body||Array.isArray(body)||Object.keys(body).sort().join(',')!=='action,payload,signature'||!['hear-pro','play-pro-conversation'].includes(body.action)||req.headers['x-voice-studio-action']!==body.action)return sendError(400,'explicit_action_required');
+      const body=req.body;if(!body||Array.isArray(body)||Object.keys(body).sort().join(',')!=='action,payload,signature'||!['hear-pro','play-pro-conversation','hear-pro-cached'].includes(body.action)||req.headers['x-voice-studio-action']!==body.action)return sendError(400,'explicit_action_required');
       const expected=crypto.createHmac('sha256',signingSecret).update(canonical({action:body.action,payload:body.payload})).digest('hex');if(!constantEqual(body.signature,expected))return sendError(403,'script_signature_invalid');
       const p=body.payload;if(!p||Array.isArray(p)||Object.keys(p).sort().join(',')!=='script,turn_id'||typeof p.turn_id!=='string')return sendError(400,'prepared_script_invalid');
       const turn=verifyScript(p.script,p.turn_id);signed={action:body.action,script:p.script,turn};
@@ -98,6 +98,9 @@ export function createVoiceStudioLocalLearnerAudioHandler({env=process.env,enabl
       const bytes=fs.readFileSync(audioFile);if(!mp3(bytes)||sha(bytes)!==state.audio_sha256)throw fail(503,'private_cache_invalid');return bytes;
     }
     try{const bytes=await cached();if(bytes)return deliver(bytes);}catch(error){return sendError(error.status||503,error.code||'private_cache_invalid');}
+    // Cache-only actions must stop here: no pending generation, recovery,
+    // provider credential lookup, journal mutation or dispatch is permitted.
+    if(signed.action==='hear-pro-cached')return sendError(404,'cached_audio_missing');
     if(pending.has(key)){const shared=await pending.get(key);return shared.ok?deliver(shared.bytes):sendError(shared.status,shared.code);}
     let complete;const shared=new Promise(resolve=>{complete=resolve;});pending.set(key,shared);
     try{

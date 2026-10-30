@@ -29,6 +29,23 @@ test('valid signed merged Learner turn generates once and persistent cache survi
  const state=JSON.parse(fs.readFileSync(path.join(f.directory,fs.readdirSync(f.directory).find(x=>x.endsWith('.json'))),'utf8'));assert.equal(state.status,'ready');assert.equal(state.turn_id,'u1');assert.equal(state.voice_id,profile.voiceId);assert.equal(state.provider_request_id,'mock-req');assert.equal(state.duration_seconds,3);assert.equal(state.delivery_source,'provider_response_download');assert.equal(state.cost_status,'unknown');
  const restarted=fixture({directory:f.directory});const next=await invoke(restarted.handler);assert.equal(next.code,200);assert.deepEqual(next.value,mp3);assert.equal(restarted.calls(),0);assert.equal(fs.statSync(f.directory).mode&0o777,0o700);
 });
+test('hear-pro-cached returns an existing validated asset and never dispatches or recovers',async()=>{
+ const f=fixture();assert.equal((await invoke(f.handler)).code,200);const cached=await invoke(f.handler,signed(script(),'u1','hear-pro-cached'));
+ assert.equal(cached.code,200);assert.deepEqual(cached.value,mp3);assert.equal(f.calls(),1);assert.equal(f.recoveries(),0);
+});
+test('hear-pro-cached misses return 404 before credentials, recovery or provider code',async()=>{
+ const directory=dir();let credentialCalls=0,generationCalls=0,recoveryCalls=0;
+ const generate=async()=>{generationCalls++;return {buffer:mp3};};generate.recover=async()=>{recoveryCalls++;return {buffer:mp3};};
+ const handler=createVoiceStudioLocalLearnerAudioHandler({env:env(),enabled:true,cacheDirectory:directory,credential:()=>{credentialCalls++;return 'never-used';},generate});
+ const miss=await invoke(handler,signed(script(),'u1','hear-pro-cached'));assert.equal(miss.code,404);assert.deepEqual(miss.value,{ok:false,error:'cached_audio_missing'});
+ assert.equal(credentialCalls,0);assert.equal(generationCalls,0);assert.equal(recoveryCalls,0);assert.deepEqual(fs.readdirSync(directory),[]);
+});
+test('hear-pro-cached retains service authentication and HMAC verification',async()=>{
+ const f=fixture();const bad=signed(script(),'u1','hear-pro-cached');bad.signature='0'.repeat(64);
+ assert.equal((await invoke(f.handler,bad)).code,403);
+ assert.equal((await invoke(f.handler,signed(script(),'u1','hear-pro-cached'),{token:'invalid'})).code,401);
+ assert.equal(f.calls(),0);assert.equal(f.recoveries(),0);
+});
 test('tampered signature, text, ID, speaker and application are rejected before provider dispatch',async()=>{
  const f=fixture();const invalid=[];let b=signed();b.payload.script.turns[1].prepared_text='changed';invalid.push(b);b=signed(script(),'h1');invalid.push(b);b=signed();b.signature='0'.repeat(64);invalid.push(b);b=signed();b.payload.script.application_id='storysisters';invalid.push(b);b=signed();b.payload.script.actor_name='Someone else';invalid.push(b);
  for(const item of invalid)assert.notEqual((await invoke(f.handler,item)).code,200);assert.equal(f.calls(),0);
