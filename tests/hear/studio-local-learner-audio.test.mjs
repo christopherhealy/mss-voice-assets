@@ -26,7 +26,7 @@ test('approved local profile is scoped to Tiziana Italian Learner turns and stri
 });
 test('valid signed merged Learner turn generates once and persistent cache survives a new handler',async()=>{
  const f=fixture(),first=await invoke(f.handler);assert.equal(first.code,200);assert.deepEqual(first.value,mp3);assert.equal(f.calls(),1);assert.equal(first.headers['Content-Type'],'audio/mpeg');
- const state=JSON.parse(fs.readFileSync(path.join(f.directory,fs.readdirSync(f.directory).find(x=>x.endsWith('.json'))),'utf8'));assert.equal(state.status,'ready');assert.equal(state.turn_id,'u1');assert.equal(state.voice_id,profile.voiceId);
+ const state=JSON.parse(fs.readFileSync(path.join(f.directory,fs.readdirSync(f.directory).find(x=>x.endsWith('.json'))),'utf8'));assert.equal(state.status,'ready');assert.equal(state.turn_id,'u1');assert.equal(state.voice_id,profile.voiceId);assert.equal(state.provider_request_id,'mock-req');assert.equal(state.duration_seconds,3);assert.equal(state.delivery_source,'provider_response_download');assert.equal(state.cost_status,'unknown');
  const restarted=fixture({directory:f.directory});const next=await invoke(restarted.handler);assert.equal(next.code,200);assert.deepEqual(next.value,mp3);assert.equal(restarted.calls(),0);assert.equal(fs.statSync(f.directory).mode&0o777,0o700);
 });
 test('tampered signature, text, ID, speaker and application are rejected before provider dispatch',async()=>{
@@ -43,7 +43,7 @@ test('simultaneous identical requests coalesce and no duplicate generation occur
  const a=invoke(f.handler),b=invoke(f.handler);await new Promise(resolve=>setImmediate(resolve));assert.equal(f.calls(),1);release();const [ra,rb]=await Promise.all([a,b]);assert.equal(ra.code,200);assert.equal(rb.code,200);assert.deepEqual(ra.value,rb.value);assert.equal(f.calls(),1);
 });
 test('uncertain dispatch is not regenerated; stored recovery is download-only after restart',async()=>{
- const f=fixture({failAfterRecovery:true});assert.equal((await invoke(f.handler)).code,503);assert.equal(f.calls(),1);const restarted=fixture({directory:f.directory});const recovered=await invoke(restarted.handler);assert.equal(recovered.code,200);assert.equal(restarted.calls(),0);assert.equal(restarted.recoveries(),1);
+ const f=fixture({failAfterRecovery:true});assert.equal((await invoke(f.handler)).code,503);assert.equal(f.calls(),1);const restarted=fixture({directory:f.directory});const recovered=await invoke(restarted.handler);assert.equal(recovered.code,200);assert.equal(restarted.calls(),0);assert.equal(restarted.recoveries(),1);const state=JSON.parse(fs.readFileSync(path.join(f.directory,fs.readdirSync(f.directory).find(x=>x.endsWith('.json'))),'utf8'));assert.equal(state.provider_request_id,'mock-req');assert.equal(state.duration_seconds,3);assert.equal(state.delivery_source,'recovery_download');assert.equal(state.cost_status,'unknown');
 });
 test('dispatch with no recovery metadata remains blocked after handler restart',async()=>{
  const directory=dir();let calls=0;const generate=async()=>{calls++;throw Error('ambiguous dispatch');};

@@ -90,7 +90,7 @@ export function createVoiceStudioLocalLearnerAudioHandler({env=process.env,enabl
     }catch(error){return sendError(error.status||400,error.code||'prepared_script_invalid');}
     const {script,turn}=signed,key=keyFor(script,turn),dir=(()=>{try{return privateDirectory(cacheDirectory);}catch{return null;}})();if(!dir)return sendError(503,'private_cache_unavailable');
     const audioFile=path.join(dir,`${key}.mp3`);
-    const deliver=bytes=>{const digest=sha(bytes);res.setHeader('Content-Type','audio/mpeg');res.setHeader('Content-Length',String(bytes.length));res.setHeader('X-Audio-SHA256',digest);return res.status(200).send(bytes);};
+    const deliver=bytes=>{const digest=sha(bytes);res.setHeader('X-Voice-Asset-Key',key);res.setHeader('Content-Type','audio/mpeg');res.setHeader('Content-Length',String(bytes.length));res.setHeader('X-Audio-SHA256',digest);return res.status(200).send(bytes);};
     async function cached(){
       const state=readState(dir,key);if(state?.status!=='ready')return null;
       if(state.cache_key!==key||state.script_id!==script.script_id||state.turn_id!==turn.transcript_event_id||state.text_hash!==sha(turn.prepared_text)||state.profile_version!==profile.version)throw fail(503,'private_cache_invalid');
@@ -115,14 +115,15 @@ export function createVoiceStudioLocalLearnerAudioHandler({env=process.env,enabl
         try{const file=path.join(dir,`${key}.json`),fd=fs.openSync(file,'wx',0o600);try{fs.fchmodSync(fd,0o600);fs.writeFileSync(fd,JSON.stringify({version:1,status:'dispatching',cache_key:key,script_id:script.script_id,turn_id:turn.transcript_event_id,text_hash:sha(turn.prepared_text),profile_version:profile.version,started_at:new Date(now()).toISOString()}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}
         catch(error){if(error.code==='EEXIST')throw fail(409,'generation_outcome_uncertain_no_retry');throw fail(503,'private_cache_unavailable');}
       }
+      const downloadOnlyRecovery=Boolean(state);
       let didPersistRecovery=false;
       const generatorForRequest=generate||createHeygenSpeech({request,credential:()=>providerCredential,validateText:(text,p)=>p===profile&&p.activity==='l2-scripted-learner'&&typeof text==='string'&&!!text.trim()&&text.length<=MAX_TEXT});
       const speech=recovery?await generatorForRequest.recover({text:turn.prepared_text,profile,recovery}):await generatorForRequest({text:turn.prepared_text,profile,persistRecovery:async metadata=>{
         if(didPersistRecovery)throw Error('recovery_already_persisted');const encrypted=encryptRecovery(metadata,recoveryKey,keyId,key);
-        writeState(dir,key,{version:1,status:'generated',cache_key:key,script_id:script.script_id,turn_id:turn.transcript_event_id,text_hash:sha(turn.prepared_text),profile_version:profile.version,recovery:encrypted});didPersistRecovery=true;
+        writeState(dir,key,{version:1,status:'generated',cache_key:key,script_id:script.script_id,turn_id:turn.transcript_event_id,text_hash:sha(turn.prepared_text),profile_version:profile.version,recovery:encrypted});recovery=metadata;didPersistRecovery=true;
       }});
       const bytes=Buffer.from(speech.buffer);if(!mp3(bytes))throw Error('audio_invalid');
-      atomicWrite(dir,`${key}.mp3`,bytes);writeState(dir,key,{version:1,status:'ready',cache_key:key,script_id:script.script_id,turn_id:turn.transcript_event_id,text_hash:sha(turn.prepared_text),profile_version:profile.version,audio_sha256:sha(bytes),audio_size:bytes.length,provider:'heygen',voice_id:profile.voiceId,engine:profile.engine,model:profile.model,completed_at:new Date(now()).toISOString()});complete({ok:true,bytes});return deliver(bytes);
+      atomicWrite(dir,`${key}.mp3`,bytes);writeState(dir,key,{version:1,status:'ready',cache_key:key,script_id:script.script_id,turn_id:turn.transcript_event_id,text_hash:sha(turn.prepared_text),profile_version:profile.version,audio_sha256:sha(bytes),audio_size:bytes.length,provider:'heygen',voice_id:profile.voiceId,engine:profile.engine,model:profile.model,provider_request_id:typeof speech.providerRequestId==='string'?speech.providerRequestId:typeof recovery?.requestId==='string'?recovery.requestId:null,duration_seconds:Number.isFinite(speech.durationSeconds)?speech.durationSeconds:Number.isFinite(recovery?.duration)?recovery.duration:null,generation_ms:Number.isFinite(speech.generationMs)?speech.generationMs:null,input_characters:Array.from(turn.prepared_text).length,delivery_source:downloadOnlyRecovery?'recovery_download':'provider_response_download',cost_status:'unknown',completed_at:new Date(now()).toISOString()});complete({ok:true,bytes});return deliver(bytes);
     }catch(error){const status=error.status||503,code=error.code||'audio_unavailable';complete({ok:false,status,code});return sendError(status,code);}
     finally{pending.delete(key);providerCredential=null;}
   };
