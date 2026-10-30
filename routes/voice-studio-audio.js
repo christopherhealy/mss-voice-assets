@@ -1,6 +1,7 @@
 // Prototype only: no live dependencies, approved profile or generation grants are installed.
 import {createHash, timingSafeEqual} from 'node:crypto';
 import {HOST_TEXT} from '../lib/generateSpeech.heygen.js';
+import {pipeline as pipeAudio} from 'node:stream/promises';
 export const SYNTHETIC_TEXT = HOST_TEXT;
 export const CANDIDATE = Object.freeze({application:'voice-studio', actor:'julie', activity:'l2-scripted-host', language:'it', provider:'heygen', voice:'tiziana', approved:false});
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -29,9 +30,7 @@ export function createVoiceStudioAudioHandler({env=process.env, enabled=false, p
     if(profile?.approved!==true||profile.provider!=='heygen'||profile.language!=='it'||profile.actor!=='julie'||
       profile.voice!=='tiziana'||!profile.voiceId||!profile.engine||!profile.model||!profile.version||!profile.settings)
       return fail(403,'approved_profile_required');
-    if(!journal||!storage||!pipeline||!generate||
-      !['getOrCreateTextItem','findExistingAsset','upsertVoiceAsset'].every(k=>typeof pipeline[k]==='function'))return fail(503,'private_infrastructure_required');
-    if(typeof generate.recover==='function'&&typeof journal.saveRecovery!=='function')return fail(503,'protected_recovery_required');
+    if(!journal||!storage)return fail(503,'private_infrastructure_required');
     const b=req.body||{};
     try {
       if(req.method==='GET') {
@@ -39,10 +38,21 @@ export function createVoiceStudioAudioHandler({env=process.env, enabled=false, p
         if(typeof key!=='string'||!/^studio:[a-f0-9]{64}$/.test(key))return fail(400,'asset_invalid');
         const record=await journal.get(key.slice(7));
         if(record?.application!=='voice-studio'||record.status!=='ready')return fail(404,'not_found');
-        const audio=await storage.read(key); // Private bytes only; never public URLs or redirects.
-        res.setHeader('Content-Type','audio/mpeg');return res.send(audio);
+        if(record.asset_id!==undefined&&record.asset_id!==key)return fail(404,'not_found');
+        res.setHeader('Content-Type','audio/mpeg');res.setHeader('X-Content-Type-Options','nosniff');
+        if(typeof storage.open==='function') {
+          const audio=await storage.open(key,{sha256:record.audioSha256});
+          try {await pipeAudio(audio,res);}catch{res.destroy();}return;
+        }
+        const audio=await storage.read(key);
+        if(record.audioSha256!==undefined&&hash(audio)!==record.audioSha256)throw Error('private_audio_integrity_failed');
+        return res.send(audio);
       }
       if(req.method!=='POST')return fail(405,'method_not_allowed');
+      if(!journal||!storage||!pipeline||!generate||
+        !['getOrCreateTextItem','findExistingAsset','upsertVoiceAsset'].every(k=>typeof pipeline[k]==='function'))return fail(503,'private_infrastructure_required');
+      if(typeof generate.recover==='function'&&typeof journal.saveRecovery!=='function')return fail(503,'protected_recovery_required');
+
       if(b.application!=='voice-studio'||b.actor!=='julie'||b.activity!=='l2-scripted-host'||
         b.language!=='it'||b.text!==SYNTHETIC_TEXT||b.profile_version!==profile.version)
         return fail(400,'prototype_scope_invalid');

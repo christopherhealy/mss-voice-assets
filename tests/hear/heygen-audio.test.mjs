@@ -25,6 +25,14 @@ test('HeyGen response persisted before download and adapted to shared buffer con
  assert.equal(f.calls[0].options.redirect,'manual');assert.equal(f.calls[1].options.headers['X-Api-Key'],undefined);
  assert.doesNotMatch(JSON.stringify(out),/signature=|synthetic-api-key/);
 });
+test('dynamic prepared text is accepted only through an explicit server-owned learner validator',async()=>{
+ const learner={...profile,activity:'l2-scripted-learner'},text='Vado a Firenze a settembre.';let posts=0,requestBody;
+ const request=async(_url,options)=>{if(options.method==='POST'){posts++;requestBody=JSON.parse(options.body);return reply();}return audio();};
+ const generate=createHeygenSpeech({credential:async()=>'mock-key',resolve:async()=>[{address:'8.8.8.8'}],request,
+  validateText:(candidate,p)=>p===learner&&p.activity==='l2-scripted-learner'&&typeof candidate==='string'&&candidate.trim().length>0&&candidate.length<=8000});
+ const result=await generate({text,profile:learner,persistRecovery:async()=>{}});assert.equal(result.buffer.toString(),mp3.toString());assert.equal(requestBody.text,text);assert.equal(requestBody.voice_id,TIZIANA_ID);assert.equal(requestBody.engine,'elevenlabs');assert.equal(requestBody.settings.model_id,'eleven_multilingual_v2');assert.equal(posts,1);
+ const fixedOnly=createHeygenSpeech({credential:async()=>'mock-key',request,resolve:async()=>[{address:'8.8.8.8'}]});await assert.rejects(fixedOnly({text,profile:learner,persistRecovery:async()=>{}}),{message:'heygen_audio_unavailable_no_regeneration'});assert.equal(posts,1);
+});
 test('download failure preserves URL and allows download-only recovery',async()=>{
  let fail=true;const f=setup({download:()=>{if(fail)throw Error('signed secret failure');return audio();}});
  await assert.rejects(f.run(),{message:'heygen_audio_unavailable_no_regeneration'});assert.ok(f.saved());
